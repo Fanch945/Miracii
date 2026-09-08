@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+data/*.db
+data/*.db-journal
+data/transcripts/
+data/keeper.log
+data/heartbeat.log
+data/clock.json
+.env
+APIkeys.txt
+.DS_Store
+Thumbs.db

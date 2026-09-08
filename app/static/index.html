@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Miracii</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <div class="workspace">
+      <div class="shell">
+        <header class="top">
+          <div class="identity">
+            <span class="mark" aria-hidden="true"></span>
+            <div>
+              <h1 id="persona-name">Miracii</h1>
+              <p id="status-line" class="status">专属对话</p>
+            </div>
+          </div>
+          <div class="actions">
+            <label class="sr-only" for="persona-select">人格</label>
+            <select id="persona-select"></select>
+            <button id="console-btn" class="ghost" type="button">控制台</button>
+            <button id="clear-btn" class="ghost" type="button">清空本页</button>
+          </div>
+        </header>
+
+        <main id="thread" class="thread" aria-live="polite">
+          <p class="empty" id="empty-hint">还没有话。从下面那一行开始。</p>
+        </main>
+
+        <form id="composer" class="composer">
+          <label class="sr-only" for="input">输入</label>
+          <textarea
+            id="input"
+            rows="1"
+            placeholder="说一句…"
+            autocomplete="off"
+            maxlength="4000"
+          ></textarea>
+          <button id="send-btn" type="submit">发送</button>
+        </form>
+      </div>
+
+      <section class="dock" id="dock">
+        <header class="dock-bar">
+          <button id="dock-toggle" type="button">控制台</button>
+          <span id="dock-hint">日志 · 对话 · 记忆 · 设定 · 人设</span>
+          <button id="dock-refresh" class="ghost" type="button">刷新</button>
+        </header>
+        <div class="dock-body">
+          <aside class="dock-tree" id="file-tree"></aside>
+          <div class="dock-main">
+            <div class="dock-meta" id="file-meta">还没有打开文件</div>
+            <pre class="dock-view" id="file-view"></pre>
+            <form id="dock-cmd" class="dock-cmd">
+              <span aria-hidden="true">›</span>
+              <label class="sr-only" for="cmd-input">控制台命令</label>
+              <input
+                id="cmd-input"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="help  ·  ls  ·  open 文件id"
+              />
+            </form>
+          </div>
+        </div>
+      </section>
+    </div>
+    <script src="/static/app.js"></script>
+    <script src="/static/console.js"></script>
+  </body>
+</html>

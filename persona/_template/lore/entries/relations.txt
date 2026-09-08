@@ -1,0 +1,6 @@
+keys: （触发词，逗号分隔）
+constant: no
+form: digest
+---
+（复杂人际关系。一个人或一段关系写一条。可以另存为 brother.txt、parents.txt。
+不要写成人物表小说；不要把性格形容词再写一遍。）

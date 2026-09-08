@@ -1,0 +1,2 @@
+# 测试人格的成长储备。对话原文在 data/transcripts/holmes-test/
+# 确认前不要写回 Miracii 主档案。

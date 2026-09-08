@@ -1,0 +1,17 @@
+timezone: Asia/Shanghai
+quiet: 00:30-08:30
+stm_minutes: 5
+routine_minutes: 30
+pomodoro_work: 25
+pomodoro_break: 5
+pomodoro_long_break: 15
+pomodoros_per_set: 4
+tick_minutes: 20
+quota_speak_per_day: 3
+min_idle_minutes: 45
+
+# 巩固时钟：对话重置 stm；然后 routine；23:00 daily；周日晚 weekly
+# pomodoro_* 不是作息表，是自主排任务时估时长的参考（监督 skill）
+
+daily:
+  - 22:00 maybe_chat

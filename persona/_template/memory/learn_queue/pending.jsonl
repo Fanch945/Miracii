@@ -1,0 +1,2 @@
+# 每行一条 JSON。监督可写，运行时默认不自动并入主档案。
+# {"t":"...","claim":"...","kind":"fact","target":"semantic/facts.txt","keys":["..."],"confidence":0.7,"source":"transcript"}

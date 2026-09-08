@@ -1,0 +1,88 @@
+# 记忆怎么在模型里实现（Miracii）
+
+人设不是「全都写进 system prompt」。窗口是 RAM，文件是磁盘。说话模型每轮只看见一小截；监督模型偶尔看见日志和时间。这和 MemGPT 把上下文当操作系统分层是同一件事。
+
+## 四层，不要混
+
+1. 身份（每轮都在）
+   profile / voice_lines / examples / forbidden_style
+   对应酒馆角色卡，也对应 MemGPT 的 system + 少量 working。
+   只写「她是谁、怎么说话」。不写长篇履历。
+
+2. 设定百科 lore（作者预写，不是记忆）
+   always.txt 每轮可进；entries/ 按关键词注入。
+   对应 SillyTavern character_book / World Info。
+   entries/ 是词条摘要（form: digest）；entries/stories/ 是场面细稿（form: story）。
+   检索在代码里做，说话模型只看见命中后的正文。
+   词条：keys 对上话题即可。细稿：话题 keys 还要加上意图词（你还记得 / 那次），或 also 里的独有情节词。
+   相同宽词打到多篇细稿、又没有独有词时，细稿全部不注入，只留词条。不用手工 weight。
+
+3. 记忆 memory（你们之间后来才发生的）
+   working = 5 分钟巩固后的短期
+   impression = 30 分钟后变糊的印象
+   episodic / semantic / learn_queue = 日周进一步抽知识
+   详见 docs/CONSOLIDATION.txt
+
+4. 原文 transcripts
+   永不删的日志。记忆文件坏了可以重摘要。对应 MemGPT recall storage。
+
+## 论文里事件和人设怎么存、怎么取
+
+Generative Agents (Park et al., 2023)
+  存：自然语言观察 + 时间戳，一条一事。
+  取：score = 近因 + 重要度 + 相关度。重要度由模型打 1–10。
+  另外有 reflection：一堆事件合成更高层判断，再写回记忆流。
+  我们的 episodic 笔记 = 观察；semantic = 沉淀后的判断；不要把 reflection 写进 profile。
+
+MemGPT (Packer et al., 2023/24)
+  主上下文：指令 + working + 最近消息队列。
+  外部：recall（全文检索对话）+ archival（任意事实库）。
+  模型用工具决定换页，而不是把全书塞进提示。
+  我们的 working.txt 就是 working context；transcripts 是 recall；semantic + lore entries 是 archival。
+  监督 skill 相当于他们的 control flow：先改记忆/决定是否开口，再让说话模型出声。
+
+MemoryBank (Zhong et al., AAAI 2024)
+  对话原文 → 每日事件摘要 → 用户画像。
+  用艾宾浩斯曲线衰减；被再次检索就加强。
+  我们 compact_episodic 做「一日一条」；semantic 做人/事画像；以后可加 strength 字段。
+
+A-MEM (Xu et al., NeurIPS 2025, arXiv:2502.12110)
+  新记忆先建成 note：content, timestamp, keywords, tags, context, links。
+  写入时找近邻、建边，并允许改旧笔记的 context（memory evolution）。
+  我们的 episodic 模版字段对齐这套；learn_queue 是「进化」的候审栏，避免直接改 lore。
+
+SYNAPSE (2026, spreading activation)
+  情景记忆和语义记忆放在一张图上，用激活扩散取多跳关系。
+  我们暂不建图。先把 keys / links 写在笔记头里，以后可检索。
+
+## 新信息怎么「学会」
+
+对话里出现新事实时，不要当场改 profile 或 lore/always。
+
+流程：
+  原文落盘 transcripts
+  → 监督 tick 或会话结束时抽出 claim
+  → 写入 memory/learn_queue/pending.jsonl
+  → 你确认，或以后用规则自动采纳高置信、低风险条目
+  → 事件进 episodic/；稳定事实进 semantic/；作者设定才进 lore/
+
+风险条目（改关系、改禁忌、改身份）永远只进候审。
+
+## 模型每轮实际拼什么
+
+system =
+  身份四件套
+  + lore/always（短）
+  + memory/working（短）
+  + 命中的 lore entries（词条按话题 keys；细稿还要意图词或独有情节词）
+  + 仅当这轮问到几点/日期/日历时：本机此刻 + calendar.txt（skills/clock，不每轮塞）
+  + learn 已采纳的少量事实
+user/assistant = 最近 N 轮原文
+
+监督模型不进这条说话链。它读 log + 时间 + 日程，只输出 JSON：是否开口、是否压缩、是否排队新知识。
+
+## 主动说话
+
+开口权在运行时，不在说话模型。
+心跳进程按巩固时钟叫醒监督（stm / routine / daily / weekly）→ speak=true 才生成一句 → 再走过滤器。
+没有心跳就没有巩固链，也没有「她还在过日子」。详见 docs/HEARTBEAT.txt 与 docs/CONSOLIDATION.txt

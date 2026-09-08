@@ -1,0 +1,12 @@
+记忆 ≠ 设定。lore 是作者写的世界；这里是你们之间才发生的事。
+
+working.txt     短期工作记忆。对话结束后 5 分钟 stm 写入。
+impression/     印象区。30 分钟 routine 把细节糊成「那次大概怎样」。
+episodic/       仍具体的事件笔记。
+semantic/       日总结从印象抽出的稳定事实。
+learn_queue/    周总结才允许提出的设定/知识模式，确认前不写 lore。
+schedule.txt    stm_minutes / routine_minutes / 番茄钟参考 / quiet。
+
+详见 docs/CONSOLIDATION.txt
+
+检索以后按：近因 × 重要度 × 关键词/向量相关度（Park 2023）。现在先靠 keys 字段和人工打开。

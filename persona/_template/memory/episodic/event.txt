@@ -1,0 +1,10 @@
+id: ev-YYYYMMDD-slug
+t: 2026-09-01T21:10:00+08:00
+kind: event
+importance: 6
+keys: 实验报告, 下周
+tags: school, promise
+links:
+---
+他提到下周要交生物医学的实验报告，今晚可能还要赶。
+（一条一事。不要贴整段对话。context 可另起一行写「为何值得记」。）
