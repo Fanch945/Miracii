@@ -19,7 +19,7 @@
 
 3. 记忆 memory（你们之间后来才发生的）
    working = 5 分钟巩固后的短期
-   impression = 30 分钟后变糊的印象
+   impression = 30 分钟后变糊的印象（场面/气氛/keys，不是截断对白）
    episodic / semantic / learn_queue = 日周进一步抽知识
    详见 docs/CONSOLIDATION.txt
 
@@ -77,12 +77,12 @@ system =
   + 命中的 lore entries（词条按话题 keys；细稿还要意图词或独有情节词）
   + 仅当这轮问到几点/日期/日历时：本机此刻 + calendar.txt（skills/clock，不每轮塞）
   + learn 已采纳的少量事实
-user/assistant = 最近 N 轮原文
+user/assistant = 最近 N 轮原文（仅 sqlite 里还在的；已巩固的句子不能从网页退回）
 
-监督模型不进这条说话链。它读 log + 时间 + 日程，只输出 JSON：是否开口、是否压缩、是否排队新知识。
+监督模型不进这条说话链。它读 log + 时间 + 日程 + 近段原文，只输出 JSON：是否开口、是否压缩、印象段落、是否排队新知识。每次调用的输入输出在 `data/supervisor.jsonl`。
 
 ## 主动说话
 
 开口权在运行时，不在说话模型。
-心跳进程按巩固时钟叫醒监督（stm / routine / daily / weekly）→ speak=true 才生成一句 → 再走过滤器。
+心跳进程按巩固时钟叫醒监督（stm / routine / daily / weekly）→ speak=true 才生成一句写入对话 → 再走过滤器。
 没有心跳就没有巩固链，也没有「她还在过日子」。详见 docs/HEARTBEAT.txt 与 docs/CONSOLIDATION.txt

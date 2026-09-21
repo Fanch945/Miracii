@@ -1,3 +1,0 @@
-# 次要人设候审（旧入口）。新流程用 memory/learn_queue/pending.jsonl
-# 对话原文仍进 data/transcripts/
-# 确认后：事件 → memory/episodic/ ；稳定事实 → memory/semantic/ ；作者设定 → lore/

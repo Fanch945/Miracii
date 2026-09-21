@@ -16,7 +16,7 @@
   读时钟、quiet、quota、上次对话间隔、keeper 尾部、working 体积
   → 把这些交给监督 skill（另一个 API）
   → 监督只输出 JSON：沉默 / 开口 / 压缩 / 排队新知识 / 可选的自选任务（时长用番茄钟作参考，不是作息表）
-  → 运行时执行文件操作；开口才调用说话模型
+  → 运行时执行文件操作；`speak=true` 才调用说话模型，把那一句写入对话
 
 聊天到来时网页 ping 一下心跳（本机 UDP），不必靠轮询发现「5 分钟窗口被重置了」。
 
@@ -51,4 +51,9 @@ Windows 上就是一个保持运行的 Python 进程（本仓库 `python -m app.
 
 心跳循环睡到截止点再醒：对话重置 5 分钟 STM，然后 30 分钟印象，再日/周图式。见 docs/CONSOLIDATION.txt。
 `python -m app.heartbeat` 不轮询。聊天 ping 叫醒；否则等到 STM / routine / 23:00。
-默认不往聊天页塞消息。stm/routine 即使没有 sumapi 也会做文件级巩固。番茄钟只出现在监督提示里，当作她给自己排任务的时长参考，不锁回话。
+启动时补做落下的巩固（未完成的 tick、过期的 stm/routine、错过的日周），当前还在聊则只补日周、不混 stm。
+stm/routine 即使没有 sumapi 也会做文件级巩固。番茄钟只出现在监督提示里，当作她给自己排任务的时长参考，不锁回话。
+监督 `speak=true` 时，心跳会让说话模型生成一两句并写入对话；页面轮询 `/api/inbox`。安静时段、quota、正在聊会挡住。测试：`python -m app.heartbeat --once idle --force-speak`。
+监督 API 网络错误会重试再 fallback。已经 stm 的对话不能从网页退回。
+每次监督调用会把输入 packet 和输出 decision 写入 `data/supervisor.jsonl`（控制台 → 日志 → 监督输入输出）。
+daily/weekly 只在模型给出真实 `learn` 条目时入队，不再写空的「尚未写入设定」占位。

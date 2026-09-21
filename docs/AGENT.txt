@@ -1,0 +1,42 @@
+# 实时运行、主动开口、工具：怎么在 API 上搭，而不是换一个更会聊天的模型
+
+说话模型不会自己「一直醒着」。HTTP 一次请求醒来一次。要过日子、要主动找你、以后要动灯，靠的是**本机进程 + 监督 JSON + 你写的工具**，不是把 GPT 或 DeepSeek Harness 接进对话框。
+
+## 三层，不要并成一层
+
+| 层 | 谁 | 干什么 |
+|---|---|---|
+| 时钟 | `python -m app.heartbeat` | 真睡到 STM / 印象 / 日周，聊天用 UDP 叫醒 |
+| 监督 | sumapi，只输出 JSON | 沉默还是开口、压缩记忆、排队知识、可选自选任务 |
+| 说话 | dsapi `deepseek-flash` | 只生成要对你说的那一两句 |
+
+监督**不写台词**。`speak=true` + `topic`（短由头）→ 运行时再调说话模型，把那一句写进 sqlite / transcripts。页面每 8 秒拉 `/api/inbox`。安静时段、每日 quota、正在聊，运行时会挡住。
+
+测主动开口（不必等 30 分钟）：
+
+```text
+python -m app
+python -m app.heartbeat --once idle --force-speak
+```
+
+`topic` 的格式见 `skills/supervisor/SKILL.md`：具体由头，禁止空的「在吗」。
+
+## 工具 / skill / 智能家居
+
+模型「会用 skill」= 它能按 JSON schema 填参数。真正执行的是你的代码。
+
+以后若要接：
+
+1. 运行时准备一份很小的工具表，例如 `set_timer`、`queue_learn`、`ha_call`（Home Assistant webhook）。
+2. 说话或监督请求带 `tools`；模型回 `tool_call`。
+3. **本地**执行，把结果再喂回去。灯、锁、摄像头只走你信任的网关，不要把公网任意 URL 交给模型。
+
+现在的 `skills/supervisor` 和 `skills/clock` 是给监督/时钟读的规程，还不是 OpenAI 那种 function calling。下一步若做工具，先做本地、可撤销、有白名单的几个，而不是「通用智能体」。
+
+DeepSeek V4.1 Flash 已经带视觉和 tool calling。DeepSeek Harness（文档里的 DSH）是写代码的 agent 脚手架，不适合当人格主循环。GPT 不是必需：人格稳定靠文件和监督约束，不靠换更强的聊天模型。更强的模型（V4 Pro / GPT）只在「真的要跑复杂工具链」时当工人，仍由本机监督决定何时开口、何时调工具。
+
+## 不要做的事
+
+- 让说话模型 24 小时自己轮询「我该干什么」
+- 把家居控制写进人设，当成她会的魔法
+- 用视觉模型当监督（贵、爱说话）

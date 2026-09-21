@@ -1,3 +1,0 @@
-# 每行一条 JSON。监督可写，运行时默认不自动并入主档案。
-# {"t":"...","claim":"...","kind":"fact","target":"semantic/facts.txt","keys":["..."],"confidence":0.7,"source":"transcript"}
-{"t": "2026-09-02T23:00:02+08:00", "claim": "daily 巩固：从 impression 提炼，尚未写入设定", "kind": "impression", "target": "semantic/facts.txt", "keys": ["daily"], "confidence": 0.4, "source": "clock-daily"}

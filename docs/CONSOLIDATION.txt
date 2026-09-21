@@ -24,7 +24,8 @@
 
 30 分钟 routine
   → 这一轮对话只写一次印象（细节变糊），不要每 30 分钟把同一段再抄一遍
-  → working 改成短印象，原文仍在 transcripts
+  → 印象是「那次大概怎样」：场面、梗、气氛、几个 keys；不要贴对白，不要把每句截成省略号
+  → working 改成同一段短印象，原文仍在 transcripts
 
 当天 23:00 后尚未总结
   → daily：从印象抽 1–3 条事实候审（semantic）
@@ -37,7 +38,7 @@
 ## 文件
 
 working.txt     海马式情节的工作台，容量要小
-impression/     模糊后的印象区
+impression/     模糊后的印象区。一场坐下来写一块：那次 / 气氛 / keys
 episodic/       仍值得保留的具体事件
 semantic/       稳定事实
 learn_queue/    日周深化后的设定/知识候审
@@ -46,3 +47,18 @@ lore/           作者或你确认后的设定，慢系统的「新皮层」
 运行时：`python -m app.heartbeat` 睡到下一个截止点（STM / 30 分钟印象 / 日周），聊天用本机 UDP 叫醒，不再每 15 秒空转。
 网页每发一句会 `clock.on_chat`：重置 5 分钟窗口，并 ping 心跳。不在回复路上再调一次监督（免得拖延迟）。
 自主任务的时长参考写在监督 skill 里，不锁时钟。
+
+## 中断与补做
+
+心跳重启时：先做上次没做完的 tick，再按现实时间一口气补落下的阶段。
+- 当前 5 分钟窗口还在聊：不补 stm/routine，免得把新话和旧段搅在一起。日周归纳仍可补（读 impression）。
+- 已经静下来：立刻补 stm；routine 的到期锚在「本该 stm 的时刻 + 30 分钟」，晚到了就接着补，不要再等半小时。
+- 日周：错过昨晚 23:00 就补一次 daily，记在昨天，今晚 23:00 仍会再跑。weekly 在周一到周六补上上周日那次，记入本周，避免重启死循环。
+- stm 用指纹防重复写入。监督 API 失败会重试，再失败则文件级 gist fallback。
+- 每次 tick 的完整输入包和输出 JSON 追加到 `data/supervisor.jsonl`；一行摘要在 `data/heartbeat.log`。
+- 网页清空不能动已经 stm 过的句子：记忆锁在 `clock.json` 的 `consolidated_through_id`。
+
+## 不要退回已巩固的对话
+
+清掉屏幕但记忆还在，她会提起你已经「没说过」的事，时间和内容对不上。
+已经进 working / impression 的段落禁止撤回。只能撤回尚未 stm 的尾巴；失败的 API 会把那一句从网页和 transcripts 一起卷回，便于重发。
