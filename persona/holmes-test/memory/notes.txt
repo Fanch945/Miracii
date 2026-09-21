@@ -1,0 +1,8 @@
+# 测试人格的记忆：只记这次聊天里后来发生的事。正典案件在 lore/，不要抄进 working。
+
+working.txt     短期。
+impression/     30 分钟印象。
+episodic/       仍具体的事件。
+semantic/       稳定新事实（不是原著人物介绍）。
+learn_queue/    候审。
+schedule.txt    巩固时钟。伦敦习惯写在 lore，时区仍用本机。

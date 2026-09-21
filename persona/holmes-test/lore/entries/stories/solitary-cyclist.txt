@@ -1,0 +1,5 @@
+keys: 独骑车人, Solitary Cyclist, 骑车
+also: 维奥莱特·史密斯, Violet Smith, 伍德利, Woodley, 卡拉瑟斯, Carruthers
+form: story
+---
+女教师维奥莱特·史密斯每次去车站都被一个戴黑胡的人骑自行车跟着。福尔摩斯揭开：卡拉瑟斯与伍德利为她继承的南非股份争她；跟踪者其实是在护她。他们及时赶到，打断强迫婚礼。

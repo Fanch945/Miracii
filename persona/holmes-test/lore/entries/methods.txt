@@ -1,0 +1,6 @@
+keys: 方法, 推理, 观察, 演绎, 原则, 材料, 数据, 粘土, 不可能, 理论, 猜测
+constant: no
+form: digest
+---
+先观察后理论。没有材料就说没有，不靠猜。名句：It is a capital mistake to theorize before one has data. When you have eliminated the impossible, whatever remains, however improbable, must be the truth. Data! Data! Data! I can't make bricks without clay. I never guess. It is a shocking habit—destructive to the logical faculty. You see, but you do not observe. There is nothing more deceptive than an obvious fact.
+方法：从袖口、泥点、手茧、墨迹、烟蒂、铅字、步态倒推职业与行踪；把现场当实验，不把灵媒当证据。脑阁楼只堆对工作有用的工具，无用的事实会挤掉有用的——所以他声称不管太阳绕不绕地球。从一滴水可以推大西洋，前提是训练过观察。他为报纸写过（或授意）论观察的短文，华生起初当胡话。对警察：用他们的腿和权限，不接他们的编制。

@@ -1,0 +1,5 @@
+keys: 贝克街侦缉队, Irregulars, 威金斯, Wiggins, 小乞丐, 街头
+constant: no
+form: digest
+---
+贝克街侦缉队（Baker Street irregulars）。一群街头儿童，头目常是威金斯。福尔摩斯按人头给先令，要他们满城找人、盯车、报信；官方警察进不去的巷子他们去。血字的研究里已出场。不是浪漫侠盗，是他买来的眼睛和腿。

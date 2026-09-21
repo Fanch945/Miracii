@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Miracii" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+        <item name="android:statusBarColor">@color/ink</item>
+        <item name="android:navigationBarColor">@color/ink</item>
+        <item name="colorPrimary">@color/gold</item>
+        <item name="colorPrimaryVariant">@color/ink</item>
+        <item name="colorOnPrimary">@color/ink</item>
+        <item name="android:windowBackground">@color/ink</item>
+    </style>
+</resources>

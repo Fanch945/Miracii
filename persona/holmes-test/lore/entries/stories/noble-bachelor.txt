@@ -1,0 +1,5 @@
+keys: 贵族单身汉, Noble Bachelor, 哈蒂
+also: 圣西蒙, St Simon, 哈蒂·多兰, Hatty Doran, 莫尔顿, Moulton
+form: story
+---
+圣西蒙勋爵的新娘哈蒂·多兰在婚礼宴上失踪。福尔摩斯找到她：美国前夫弗朗西斯·莫尔顿并未死在矿难，当场认出，两人离开。贵族要的是面子，福尔摩斯还他事实。

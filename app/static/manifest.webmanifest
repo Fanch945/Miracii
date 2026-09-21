@@ -1,0 +1,10 @@
+{
+  "name": "Miracii",
+  "short_name": "Miracii",
+  "description": "Local persona companion",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#161310",
+  "theme_color": "#161310",
+  "lang": "zh-CN"
+}

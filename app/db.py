@@ -103,7 +103,59 @@ def recent_dialogue(session_id: str, limit: int = 24) -> list[dict]:
     return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
 
 
-def clear_messages(session_id: str) -> None:
+def max_message_id(session_id: str) -> int | None:
     with connect() as conn:
-        conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        row = conn.execute(
+            "SELECT MAX(id) AS mid FROM messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    mid = row["mid"] if row else None
+    return int(mid) if mid is not None else None
+
+
+def max_created_at(session_id: str) -> str | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT created_at FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+    return row["created_at"] if row else None
+
+
+def delete_message(message_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))
         conn.commit()
+
+
+def delete_messages_after(session_id: str, after_id: int | None) -> int:
+    """Delete unconsolidated tail. after_id None means delete all in the session."""
+    with connect() as conn:
+        if after_id is None:
+            cursor = conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        else:
+            cursor = conn.execute(
+                "DELETE FROM messages WHERE session_id = ? AND id > ?",
+                (session_id, after_id),
+            )
+        conn.commit()
+        return int(cursor.rowcount or 0)
+
+
+def count_after(session_id: str, after_id: int | None) -> int:
+    with connect() as conn:
+        if after_id is None:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM messages WHERE session_id = ? AND id > ?",
+                (session_id, after_id),
+            ).fetchone()
+    return int(row["n"] if row else 0)
+
+
+def clear_messages(session_id: str) -> None:
+    delete_messages_after(session_id, None)

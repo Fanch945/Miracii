@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +43,99 @@ def append_turn(persona_id: str, speaker: str, role: str, content: str, created_
 
     _log_keeper(persona_id, role, content, txt_path)
     return txt_path
+
+
+def retract_turn(persona_id: str, created_at: str) -> None:
+    """Remove one saved turn (failed reply / resend). Does not touch older days."""
+    trim_transcript_after(persona_id, created_at, inclusive=True)
+
+
+def trim_transcript_after(persona_id: str, after_created_at: str | None, *, inclusive: bool = False) -> int:
+    """Drop jsonl/txt lines newer than the lock. Keep the lock timestamp unless inclusive."""
+    folder = TRANSCRIPT_DIR / persona_id
+    if not folder.exists() or not after_created_at:
+        if after_created_at is None:
+            return _wipe_today(persona_id)
+        return 0
+    removed = 0
+    for jsonl_path in sorted(folder.glob("*.jsonl")):
+        raw = jsonl_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        kept: list[str] = []
+        dropped: list[dict] = []
+        for line in raw:
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                kept.append(line)
+                continue
+            stamp = rec.get("created_at") or ""
+            rec_t = _aware(stamp)
+            after_t = _aware(after_created_at)
+            if rec_t and after_t:
+                drop = rec_t > after_t or (inclusive and rec_t == after_t)
+            else:
+                drop = stamp > after_created_at or (inclusive and stamp == after_created_at)
+            if drop:
+                dropped.append(rec)
+            else:
+                kept.append(line)
+        if not dropped:
+            continue
+        removed += len(dropped)
+        jsonl_path.write_text(("\n".join(kept) + ("\n" if kept else "")), encoding="utf-8")
+        _rewrite_txt_from_jsonl(jsonl_path)
+    if removed:
+        _log_keeper(persona_id, "retract", f"{removed} turns after {after_created_at}", folder)
+    return removed
+
+
+def _wipe_today(persona_id: str) -> int:
+    folder = TRANSCRIPT_DIR / persona_id
+    if not folder.exists():
+        return 0
+    day = datetime.now().astimezone().strftime("%Y-%m-%d")
+    removed = 0
+    for suffix in (".jsonl", ".txt"):
+        path = folder / f"{day}{suffix}"
+        if path.is_file():
+            if suffix == ".jsonl":
+                removed = len([ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()])
+            path.unlink()
+    return removed
+
+
+def _rewrite_txt_from_jsonl(jsonl_path: Path) -> None:
+    txt_path = jsonl_path.with_suffix(".txt")
+    lines: list[str] = []
+    for line in jsonl_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        created = rec.get("created_at") or ""
+        try:
+            stamp = datetime.fromisoformat(created).astimezone().strftime("%H:%M:%S")
+        except ValueError:
+            stamp = created[11:19] if len(created) >= 19 else created
+        role = rec.get("role") or ""
+        speaker = rec.get("speaker") or ""
+        label = speaker if role == "assistant" else ROLE_LABEL.get(role, role)
+        lines.append(f"[{stamp}] {label}：{rec.get('content') or ''}")
+    txt_path.write_text(("\n".join(lines) + ("\n" if lines else "")), encoding="utf-8")
+
+
+def _aware(iso: str) -> datetime | None:
+    try:
+        value = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def _log_keeper(persona_id: str, role: str, content: str, path: Path) -> None:
@@ -113,6 +206,14 @@ def list_readable() -> list[dict]:
 
     if KEEPER_LOG.exists():
         by_id["log"]["files"].append(_item("log/keeper.log", KEEPER_LOG, "log", "保存记录"))
+    heartbeat_log = DATA_DIR / "heartbeat.log"
+    if heartbeat_log.exists():
+        by_id["log"]["files"].append(_item("log/heartbeat.log", heartbeat_log, "log", "心跳"))
+    supervisor_log = DATA_DIR / "supervisor.jsonl"
+    if supervisor_log.exists():
+        by_id["log"]["files"].append(
+            _item("log/supervisor.jsonl", supervisor_log, "log", "监督输入输出")
+        )
 
     if TRANSCRIPT_DIR.exists():
         for path in sorted(TRANSCRIPT_DIR.rglob("*")):
@@ -164,9 +265,14 @@ def resolve_readable(file_id: str) -> Path:
         raise ValueError("无效文件")
 
     if kind == "log":
-        if rest != "keeper.log":
+        allowed = {
+            "keeper.log": KEEPER_LOG,
+            "heartbeat.log": DATA_DIR / "heartbeat.log",
+            "supervisor.jsonl": DATA_DIR / "supervisor.jsonl",
+        }
+        if rest not in allowed:
             raise ValueError("无效文件")
-        path = KEEPER_LOG
+        path = allowed[rest]
     elif kind == "transcript":
         path = (TRANSCRIPT_DIR / rest).resolve()
         if not _under(path, TRANSCRIPT_DIR):

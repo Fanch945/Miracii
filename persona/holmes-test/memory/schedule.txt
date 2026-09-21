@@ -1,0 +1,14 @@
+timezone: Europe/London
+quiet: 00:30-08:30
+stm_minutes: 5
+routine_minutes: 30
+pomodoro_work: 25
+pomodoro_break: 5
+pomodoro_long_break: 15
+pomodoros_per_set: 4
+tick_minutes: 20
+quota_speak_per_day: 3
+min_idle_minutes: 45
+
+daily:
+  - 22:00 maybe_chat

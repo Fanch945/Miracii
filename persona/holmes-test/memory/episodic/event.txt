@@ -1,0 +1,6 @@
+# 格式样例。真事件另存。
+# id: ev-YYYYMMDD-slug
+# t:
+# kind: event
+# keys:
+# ---

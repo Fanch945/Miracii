@@ -1,0 +1,4 @@
+# 一篇一场，对应正典 4 长篇 + 56 短篇。没问到「那次」或 also 里的独有词，不进提示。
+
+keys 用案件名与通行译名；also 用人物、地点、物证。
+全集目录在上一级 adventures/memoirs/return/lastbow/casebook/novels。

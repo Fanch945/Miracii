@@ -92,7 +92,8 @@
           "open <文件id>      读取文件",
           "refresh            刷新列表",
           "",
-          "以后这块会挪到独立终端或可视化界面，命令先留在这里。",
+          "监督完整输入输出：open log/supervisor.jsonl",
+          "心跳摘要：open log/heartbeat.log",
         ].join("\n")
       );
       return;

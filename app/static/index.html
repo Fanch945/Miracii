@@ -2,8 +2,13 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#161310" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Miracii" />
     <title>Miracii</title>
+    <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="stylesheet" href="/static/app.css" />
   </head>
   <body>
@@ -21,7 +26,12 @@
             <label class="sr-only" for="persona-select">人格</label>
             <select id="persona-select"></select>
             <button id="console-btn" class="ghost" type="button">控制台</button>
-            <button id="clear-btn" class="ghost" type="button">清空本页</button>
+            <button id="refresh-btn" class="ghost" type="button" title="从记录重新载入对话，不会删除已经巩固的内容">
+              刷新
+            </button>
+            <button id="clear-btn" class="ghost" type="button" title="只能撤回尚未写入记忆的句子">
+              撤回未巩固
+            </button>
           </div>
         </header>
 
@@ -30,15 +40,22 @@
         </main>
 
         <form id="composer" class="composer">
-          <label class="sr-only" for="input">输入</label>
-          <textarea
-            id="input"
-            rows="1"
-            placeholder="说一句…"
-            autocomplete="off"
-            maxlength="4000"
-          ></textarea>
-          <button id="send-btn" type="submit">发送</button>
+          <input id="image-input" class="sr-only" type="file" accept="image/jpeg,image/png,image/gif,image/webp" multiple />
+          <div class="compose-main">
+            <div id="previews" class="previews" hidden></div>
+            <label class="sr-only" for="input">输入</label>
+            <textarea
+              id="input"
+              rows="1"
+              placeholder="说一句… 也可以贴图"
+              autocomplete="off"
+              maxlength="4000"
+            ></textarea>
+          </div>
+          <div class="compose-actions">
+            <button id="attach-btn" class="ghost attach" type="button" title="发图">图</button>
+            <button id="send-btn" type="submit">发送</button>
+          </div>
         </form>
       </div>
 
@@ -67,7 +84,7 @@
         </div>
       </section>
     </div>
-    <script src="/static/app.js"></script>
-    <script src="/static/console.js"></script>
+    <script src="/static/app.js?v=0.0.1"></script>
+    <script src="/static/console.js?v=0.0.1"></script>
   </body>
 </html>

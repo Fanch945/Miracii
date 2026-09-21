@@ -1,0 +1,5 @@
+keys: 住院病人, Resident Patient, 布莱辛顿
+also: 布莱辛顿, Blessington, 萨顿, Sutton, 沃辛顿, Worthingdon
+form: story
+---
+医生珀西·特里维廉有一个付高房租的住院病人布莱辛顿。所谓病人是沃辛顿银行劫案的告密者萨顿，旧同伙找上门把他吊死。福尔摩斯从假病人与俄式会客看出圈套，但去晚了。

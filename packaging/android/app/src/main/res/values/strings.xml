@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Miracii</string>
+    <string name="action_server">服务器</string>
+    <string name="server_title">电脑上的 Miracii 地址</string>
+    <string name="server_hint">http://192.168.1.8:7788</string>
+    <string name="pick_image">选择图片</string>
+    <string name="offline">连不上本机 Miracii。请先在电脑运行 python -m app --lan --web，并填入打印出的局域网地址。</string>
+</resources>

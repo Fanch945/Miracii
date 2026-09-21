@@ -5,7 +5,9 @@ from datetime import datetime
 from pathlib import Path
 
 from . import persona
-from .files import KEEPER_LOG, TRANSCRIPT_DIR
+from .files import DATA_DIR, KEEPER_LOG, TRANSCRIPT_DIR
+
+SUPERVISOR_LOG = DATA_DIR / "supervisor.jsonl"
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILL_PATH = ROOT / "skills" / "supervisor" / "SKILL.md"
@@ -109,6 +111,30 @@ def last_transcript_times(persona_id: str) -> tuple[str | None, str | None]:
     return last_user, last_as
 
 
+def _transcript_tail(persona_id: str, n: int = 20) -> str:
+    folder = TRANSCRIPT_DIR / persona_id
+    if not folder.exists():
+        return ""
+    files = sorted(folder.glob("*.txt"))
+    if not files:
+        return ""
+    lines = files[-1].read_text(encoding="utf-8", errors="replace").splitlines()
+    return "\n".join(lines[-n:]).strip()
+
+
+def _impression_tail(persona_id: str, n_chars: int = 1200) -> str:
+    folder = persona.folder(persona_id) / "memory" / "impression"
+    if not folder.exists():
+        return ""
+    files = [p for p in sorted(folder.glob("*.txt")) if p.name != "notes.txt"]
+    if not files:
+        return ""
+    text = files[-1].read_text(encoding="utf-8", errors="replace")
+    if len(text) > n_chars:
+        return "…\n" + text[-n_chars:]
+    return text.strip()
+
+
 def build_packet(persona_id: str | None = None, phase: str = "idle") -> dict:
     pid = persona_id or persona.active_id()
     now = datetime.now().astimezone()
@@ -122,7 +148,13 @@ def build_packet(persona_id: str | None = None, phase: str = "idle") -> dict:
     queue = base / "memory" / "learn_queue" / "pending.jsonl"
     pending_count = 0
     if queue.exists():
-        pending_count = len([ln for ln in queue.read_text(encoding="utf-8").splitlines() if ln.strip()])
+        pending_count = len(
+            [
+                ln
+                for ln in queue.read_text(encoding="utf-8").splitlines()
+                if ln.strip() and not ln.strip().startswith("#")
+            ]
+        )
     profile_lines = persona._read(base / "profile.txt").splitlines()[:12]
     return {
         "now": now.isoformat(timespec="minutes"),
@@ -132,6 +164,8 @@ def build_packet(persona_id: str | None = None, phase: str = "idle") -> dict:
         "schedule": schedule,
         "profile_excerpt": "\n".join(profile_lines),
         "working": persona.working_memory(pid),
+        "transcript_tail": _transcript_tail(pid),
+        "impression_tail": _impression_tail(pid),
         "semantic_index": names,
         "learn_pending_count": pending_count,
         "last_user_hint": last_user,
@@ -163,7 +197,37 @@ def default_decision(packet: dict) -> dict:
         "to_schema": to_schema,
         "learn": [],
         "tasks": [],
+        "impression": None,
+        "working_note": None,
     }
+
+
+def log_io(
+    packet: dict,
+    decision: dict,
+    *,
+    source: str,
+    applied: dict | None = None,
+    error: str | None = None,
+    raw: str | None = None,
+) -> None:
+    """Append one tick's input packet and output decision. Local file, not chat."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    record = {
+        "t": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "source": source,
+        "persona_id": packet.get("persona_id"),
+        "phase": packet.get("phase"),
+        "packet": packet,
+        "decision": decision,
+        "applied": applied or {},
+    }
+    if error:
+        record["error"] = error
+    if raw:
+        record["raw"] = raw[:4000]
+    with SUPERVISOR_LOG.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def apply_decision(persona_id: str, decision: dict) -> None:

@@ -119,6 +119,11 @@ select {
   border-color: var(--gold-dim);
 }
 
+.ghost:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .thread {
   overflow-y: auto;
   padding: 28px 4px 18px;
@@ -189,6 +194,80 @@ select {
   align-items: end;
   padding-top: 12px;
   border-top: 1px solid var(--line);
+}
+
+.compose-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.compose-actions {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+}
+
+.attach {
+  height: 48px;
+  min-width: 48px;
+  padding: 0 12px;
+}
+
+.previews {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.previews[hidden] {
+  display: none;
+}
+
+.preview {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+.preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.preview button {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  width: 18px;
+  height: 18px;
+  background: rgba(22, 19, 16, 0.75);
+  color: var(--paper);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.bubble-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.bubble-images img {
+  max-width: 220px;
+  max-height: 220px;
+  border-radius: 10px;
+  display: block;
 }
 
 textarea {
@@ -365,4 +444,54 @@ body.dock-open .dock-body {
   font: inherit;
   font-size: 0.8rem;
   outline: none;
+}
+
+@media (max-width: 720px) {
+  .shell {
+    padding: 12px 12px 8px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  }
+
+  h1 {
+    font-size: 1.15rem;
+  }
+
+  .actions {
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  select {
+    max-width: 108px;
+    padding: 6px 8px;
+  }
+
+  .ghost {
+    padding: 6px 8px;
+  }
+
+  .row {
+    max-width: 92%;
+  }
+
+  textarea {
+    font-size: 16px;
+    min-height: 44px;
+  }
+
+  #dock-hint {
+    display: none;
+  }
+
+  .dock-body {
+    grid-template-columns: 1fr;
+    height: min(52vh, 420px);
+  }
+
+  .dock-tree {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    max-height: 28%;
+  }
 }
