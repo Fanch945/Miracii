@@ -33,9 +33,18 @@
     setOpen(!document.body.classList.contains("dock-open"));
   }
 
-  function writeView(text) {
+  function writeView(text, tail = false) {
     view.textContent = text;
-    view.scrollTop = 0;
+    const pin = () => {
+      view.scrollTop = tail ? view.scrollHeight : 0;
+    };
+    pin();
+    if (tail) requestAnimationFrame(pin);
+  }
+
+  function wantsTail(fileId, truncated) {
+    if (truncated) return true;
+    return fileId.startsWith("transcript/") || fileId.startsWith("runtime/");
   }
 
   function setMode(next) {
@@ -132,7 +141,7 @@
     }
     const data = await res.json();
     meta.textContent = `${data.rel}${data.truncated ? "  ·  已截断" : ""}`;
-    writeView(data.content || "（空文件）");
+    writeView(data.content || "（空文件）", wantsTail(fileId, data.truncated));
     if (!quiet) cmdInput.blur();
   }
 
@@ -150,7 +159,7 @@
     }
     const data = await res.json();
     meta.textContent = `${data.title} · ${personaName || personaId} · 从共享日志筛出`;
-    writeView(data.content || "（空）");
+    writeView(data.content || "（空）", true);
     if (!quiet) cmdInput.blur();
   }
 

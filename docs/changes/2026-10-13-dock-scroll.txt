@@ -1,0 +1,108 @@
+# 控制台长日志打开时滚到末尾
+
+- 日期：2026-10-13
+- 作者：Cursor
+- 关联提交：本文件所在提交
+- 关联设计文档：无
+
+## 背景
+
+监督记录和心跳日志按时间往下长。控制台把正文放进 `pre` 后把滚轮停在顶部，打开时先看见最早的几行。
+
+## 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `app/static/console.js` | 监督、心跳视图，以及对话记录和已被截成末尾的文件，打开后滚到最底 |
+| `app/static/index.html` | `console.js` 缓存参数改为 `v=0.0.6` |
+
+帮助、文件列表、设定正文仍从顶部开始。
+
+## 验证
+
+在 `http://127.0.0.1:7801` 打开日志 → 监督 → 监督记录，量 `#file-view`：
+
+```text
+meta: 监督 · 樊辰宇 · 从共享日志筛出
+len: 120713
+scrollTop: 13911
+scrollHeight: 14133
+clientHeight: 222
+```
+
+`scrollTop + clientHeight` 等于 `scrollHeight`，停在末尾。末尾文本是一条监督 JSON 的结尾。
+
+## 风险与未决
+
+- 刷新正在看的长日志时也会跳回底部，中途往上翻会被刷掉。
+- 对话记录如果想从开头读，需要再往上滚。
+
+## 复核（DSH / 2026-10-13）
+
+**结论：通过。** 三条意见，第 1 条建议改，第 2 条是验证缺口，第 3 条由你定。
+
+自己跑过的（不是转述你的数据）：
+
+```powershell
+node --check app/static/console.js          # exit 0，语法通过
+.venv\Scripts\python.exe -m app --web --no-heartbeat --port 7802
+# GET /api/files  → 165 个 id；前缀分布 lore/ 100、memory/ 41、persona/ 13、transcript/ 11
+# GET /api/files/content?id=transcript/miracii/2026-08-18.txt → truncated=False，686 字节
+```
+
+读代码确认对的地方：`writeView` 默认 `tail=false`，帮助/文件树/设定正文仍从顶部开始；`scrollTop = scrollHeight`
+会被浏览器夹到最大值，等价于「贴底」；先同步 `pin()` 再补一帧 `requestAnimationFrame`，所以后台标签页不触发
+rAF 时也已经贴底。
+
+1. **`fileId.startsWith("log/")` 是死条件。** 实测全部 id 前缀只有 `lore/`、`memory/`、`persona/`、
+   `transcript/`，加上 console.js 内置的 `runtime/heartbeat`、`runtime/supervisor`——没有 `log/`。
+   建议删掉，或注明它想覆盖谁。
+2. **提交的验证没覆盖 `wantsTail` 本身。** 你量的是「监督记录」，那条路径传的是字面量 `true`，
+   所以前缀表全写错也照样通过。建议补一条文件路径的实测：打开某天的
+   `transcript/<persona>/<date>.txt`，确认 `scrollTop + clientHeight == scrollHeight`。
+   附带一个事实：`truncated` 分支目前没有实际样本——阈值 `MAX_READ_BYTES = 400_000`，而最大的
+   transcript 只有 10.3 KB、`supervisor.jsonl` 237.6 KB。真正让 transcript 贴底的是前缀判断。
+3. **「刷新会跳回底部」有个便宜的改法。** 重开同一个文件时，若刷新前用户已经往上翻
+   （`scrollTop + clientHeight < scrollHeight - 4`），就不 pin，保住阅读位置；首次打开仍贴底。
+   采纳与否由你定——当前行为自洽，且你已在「风险与未决」里写明。
+
+## 回应（Cursor / 2026-10-13）
+
+1. **采纳。** `wantsTail` 里的 `fileId.startsWith("log/")` 已删。现有 id 没有这个前缀；`transcript/`、内置的 `runtime/`，以及 `truncated`，仍会贴底。上文「改了什么」里的 `log/` 一并去掉，和代码一致。
+
+2. **采纳。** 实测。先起服务，再用无头 Chrome（`--window-size=1280,800`，视口 1258×702）打开页面，`MiraciiDock.setOpen(true)` 之后 `openFile`，两帧后量 `#file-view`。
+
+```powershell
+.venv\Scripts\python.exe -m app --web --no-heartbeat --port 7803
+# Chrome 打开 http://127.0.0.1:7803/
+```
+
+`transcript/miracii/2026-08-18.txt`：
+
+```text
+meta: data/transcripts/miracii/2026-08-18.txt
+len: 266
+scrollTop: 0
+scrollHeight: 220
+clientHeight: 220
+```
+
+`scrollHeight` 与 `clientHeight` 同为 220，正文矮过视口。这个高度下贴顶和贴底都会让等式成立。
+
+改量 `transcript/miracii/2026-10-13.txt`：
+
+```text
+meta: data/transcripts/miracii/2026-10-13.txt
+len: 1492
+scrollTop: 574
+scrollHeight: 794
+clientHeight: 220
+```
+
+`574 + 220 = 794`，等于 `scrollHeight`，停在末尾。末尾文本是「默认维度先跑起来，我等着看结果。」
+
+3. **不采纳。** 刷新，以及把日志面板再次打开，都会重新打开当前这份文件。长日志的打开规则就是停在最新一行，刷新沿用这条规则。人已经在底部时，新写进来的行会留在视口里。
+
+   保住阅读位置要在替换整段正文之前记下 `scrollTop`，并且只在重开同一个文件、当时已经离开底部时跳过贴底。末尾追加时，旧的像素位置还对着同一段话。截成末尾时窗口会丢掉开头几行，同一个 `scrollTop` 对上的是另一段。离开底部大约 4px 以上就停住，也会让差一点贴住的监督记录在刷新后停在旧行。
+
+   「风险与未决」里已经写明刷新会跳回底部。这次只删掉没有对应 id 的 `log/` 判断。
