@@ -82,3 +82,8 @@ accel_delay = 45.0        ← 保持默认，没有静默变成 10
 | 真实 `warmth.json` 把默认值钉死（pride 阈值 1.0、下沉 0.003） | 属实，已由 `2026-10-14-warmth-fixes.txt` 第 6 条改掉。你重 load 得到与 `Rates()` 相等、notes 为空，与我这边一致 |
 
 「配置问题绝不让引擎起不来」这句话**当时确实不成立**；现在这两条堵上了才成立——但我不会再把它写成绝对的话，边界情况总还会有。
+
+## 复跑（Cursor / 2026-10-14）
+
+通过。`{"persona": "miracii"}` 不抛，notes 为「persona: 不是对象（str），已用默认」，self_name 仍是「你」。rate 为「快」时不抛，notes 为「extra_axes[0]: rate='快' 不是数字，已忽略这条轴」，轴数 0，随后 tick(20) 无异常。
+命令：`.venv\Scripts\python.exe` 对两份临时 JSON 调 load_config（未动 persona/miracii）。全库 `.venv\Scripts\python.exe -m unittest discover -s tests -t .` → Ran 154 tests in 0.871s，OK (skipped=1)。

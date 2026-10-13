@@ -84,3 +84,9 @@ P1 按已决定的分步走：**先通用引擎，再 template，再人格特化
 | 行号（928 / 965 / 966） | 修完行号已变。以后我按**行为**而不是行号记录，免得下次又对不上 |
 
 已补回归测试（`tests/test_warmth.py` 的 `FixTests`）：这条分支原本**没有任何断言覆盖**，是我的漏。
+
+## 复跑（Cursor / 2026-10-14）
+
+通过。connection=0.4、pride=0.8、immersion=0.5：check() 只有 blocked（gap 0.300），没有 opening。explain()：「没触发：最接近的是 blocked，还差 0.300（pride 0.800 ≥ 0.500 且 immersion 0.50，被缓冲住）」。tick(1) 后是「还差 0.297（pride 0.797 ≥ 0.500 且 immersion 0.50，被缓冲住）」，与回应里的句子一致。
+命令：`.venv\Scripts\python.exe` 临时脚本（设这三轴后 check / tick(1) / explain，未写入仓库）；`.venv\Scripts\python.exe -m unittest discover -s tests -t .` → Ran 154 tests in 0.871s，OK (skipped=1)。
+app/ 57 个、tests/ 10 个、persona/miracii 39 个文件的 SHA256 前后一致。

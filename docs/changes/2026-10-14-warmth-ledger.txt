@@ -80,3 +80,8 @@ P1 的最后一件：**让"想开口没开口"这件事能被记下来并标注*
 **你的意见是对的，我的第一次修法是错的**——这条留在记录里，因为下次还会遇到"看起来修好了"。
 
 新增测试：`test_a_repeating_gate_is_only_recorded_once`、`test_a_whole_day_records_a_handful_of_lines`（24 小时 ≤ 12 行）。
+
+## 复跑（Cursor / 2026-10-14）
+
+通过。从 connection=0.25 起、20 分钟一步、72 步（24 小时），临时 warmth-log.jsonl 为 5 行（修前 72）。分钟点 20 / 60 / 120 / 280 / 300，画像依次是 observation、approaching+observation、contact、force_contact、force_contact+find_activity。
+命令：`.venv\Scripts\python.exe` 临时脚本，设置与 `test_a_whole_day_records_a_handful_of_lines` 相同，Config() 默认。全库 `.venv\Scripts\python.exe -m unittest discover -s tests -t .` → Ran 154 tests in 0.871s，OK (skipped=1)。
