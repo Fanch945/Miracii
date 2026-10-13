@@ -61,3 +61,28 @@
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-14）
+
+首次只记时间、只有 contact/force_contact 走 `deliver_speak`、原有安静/配额/在聊/hold 仍生效、防自旋，与记录一致。`persona/miracii/memory/schedule.txt` 的 tick_minutes 为 20；当时 `--state` 为间隔 20.0、connection 0.00041，其余五轴为 0。`tests/test_warmth.py` 526 行把 `tick_minutes` mock 成 7 再断言等于 7，没有读到日程文件。
+「按真实间隔推进」夸大了：`tick` 753 行把分钟截到 60，766 行仍把 last_tick 写成现在。临时状态上 3 小时空档返回 elapsed=180，connection 却是 0.042，与只推进 60 分钟相同。513 行 `explain(fired)` 在未触发时变成「没触发，也没有可比的差距」；同一状态下不传参的 explain() 是「还差 0.186」。connection 只涨不落记录里没写，后来的 `on_user_message` 补上了；`app/main.py` 390 行调用的是 `active_id()`，这条消息存在 `sid` 上。
+最该先修：`app/warmth.py` 753 行和 766 行。超过 60 分钟的空档要留下，否则停机一夜不会按真实间隔补积温。
+
+## 复核（Cursor / 2026-10-14）
+
+首次只记时间、只有 contact/force_contact 走 deliver_speak、安静时段/配额/正在聊/hold 仍生效、防自旋，与记录一致。schedule.txt 的 tick_minutes 是 20；当时 `--state` 读到间隔 20.0 分钟、connection 0.00041，其余五轴为 0。`tests/test_warmth.py` 526 行把 tick_minutes mock 成 7.0 再断言等于 7.0，没有读日程。
+「之后按真实间隔推进」夸大了。`tick` 753 行把分钟截到 60，766 行仍把 last_tick 拨到现在。临时状态文件上 3 小时空档返回 elapsed=180，connection 却等于只走 60 分钟（0.042）。513 行 `explain(fired)` 在没触发时丢掉差距，输出「没触发，也没有可比的差距」；不传参才能打出「还差 0.186」。connection 只涨不落记录里没写，后来的 on_user_message 补上了；`app/main.py` 390 行调用的是 active_id()，这条消息存在 sid 上。
+最该先修：`app/warmth.py` 753 行与 766 行。超过 60 分钟的空档要留下来，否则停机一夜不会按真实间隔补积温。
+
+### 回应（DSH / 2026-10-14）
+
+（本记录同样有两个复核节，原因见 `2026-10-14-warmth-engine.txt` 的回应。）
+
+| 意见 | 处理 |
+|---|---|
+| `tests/test_warmth.py:526` 把 `tick_minutes` mock 成 7 再断言等于 7，等于什么都没测 | **采纳，已修**。改为 mock `supervisor.parse_schedule`，并补上缺配置 / 坏值 / 0 三种情形（都该退回 20）。你说得对，原来的写法是自证 |
+| `explain(fired)` 在未触发时丢掉差距，同一状态不传参却有「还差 0.186」 | **采纳，已修**。`ambient_tick` 改调 `engine.explain()`（不传参，用完整轨迹），两种调用不会再打架 |
+| `app/main.py` 用 `active_id()`，而这条消息存在 `sid` 上 | **采纳，已修**。`sid` 是已存在的人格就用它，否则退回 `active_id()` |
+| 3 小时空档返回 elapsed=180，connection 却只走 60 分钟；「按真实间隔推进」夸大 | **部分采纳：口径已修，上限保留**。现在返回里同时有 `elapsed`（真实空档）、`applied`（实际推进）、`capped`（是否被截），台账两个数都记——**报告不再骗人**。但 60 分钟上限我**不改默认**：她并没有在关机时"等着"，一开机就扑上来也不像她。已做成可配的 `Config.max_tick_minutes`，你想要真实补积温就把它调大。**分歧保留** |
+
+复现命令：把状态文件的 `last_tick` 设成 3 小时前，`ambient_tick(now=...)` → `elapsed=180.0 applied=60.0 capped=True connection=0.042`。

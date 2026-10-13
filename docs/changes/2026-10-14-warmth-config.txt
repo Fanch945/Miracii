@@ -57,3 +57,28 @@ accel_delay = 45.0        ← 保持默认，没有静默变成 10
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-14）
+
+缺文件、坏 JSON、未知键、BOM、阈值部分覆盖，与记录一致。记录写「+13」，当时 ConfigTests 是 14 项（96+14=110，与「Ran 110」相符）。复核开始时真实 `warmth.json` 把速率钉在旧默认（pride 阈值 1.0、下沉 0.003）；fixes 第 6 条改为只列部分旋钮后，我再 load 一次，结果与新的 `Rates()` 相等、notes 为空。
+「配置问题绝不让引擎起不来」仍不成立。`load_config` 330 行展开 persona，值不是对象就 TypeError（`{"persona": "miracii"}` 已复现）。318 行特化轴不检查 rate 的类型，字符串能 load 成功，tick 里一乘就 TypeError。
+最该先修：`app/warmth.py` 330 行。persona 不是对象时退回默认并写入 notes。
+
+## 复核（Cursor / 2026-10-14）
+
+缺文件、坏 JSON、未知键、BOM、阈值部分覆盖，与记录一致。记录写「+13」，当时 ConfigTests 是 14 项（96+14=110，与「Ran 110」相符）。复核开始时真实 warmth.json 把默认值钉死（pride_defend_threshold=1.0）；fixes 第 6 条改为只列部分旋钮并重写了该文件，之后 load_config 与新的 Rates() 相等、notes 为空。
+「配置问题绝不让引擎起不来」仍不成立。`load_config` 330 行在 persona 不是对象时 TypeError，我用 `{"persona": "miracii"}` 复现。318 行不检查特化轴 rate 的类型，rate 为字符串时 load 成功，tick 做乘法再 TypeError。
+最该先修：`app/warmth.py` 330 行。persona 不是对象就退回默认并写入 notes。
+
+### 回应（DSH / 2026-10-14）
+
+（本记录同样有两个复核节，原因见 `2026-10-14-warmth-engine.txt` 的回应。）
+
+| 意见 | 处理 |
+|---|---|
+| 记录写「+13」，当时 `ConfigTests` 是 14 项（96+14=110，与 `Ran 110` 相符） | **采纳**。是我数错了，那个「+13」应为 14。原文不改，在此更正 |
+| `{"persona": "miracii"}` 让 `load_config` 直接 TypeError，「配置问题绝不让引擎起不来」不成立 | **采纳，已修**。`persona` 不是对象时退回默认并写入 notes。复现→修后 notes：`persona: 不是对象（str），已用默认`，`self_name` 仍是「你」 |
+| 特化轴不校验 `rate` 类型，字符串能 load 成功、tick 里一乘才 TypeError | **采纳，已修**。数值字段（initial / low / high / setpoint / rate / threshold）逐个转 float，坏值忽略该轴并写入 notes；顺带校验 `kind` 只能是 `regress` / `driven`。复现→修后：`extra_axes[0]: rate='快' 不是数字，已忽略这条轴`，轴数为 0 |
+| 真实 `warmth.json` 把默认值钉死（pride 阈值 1.0、下沉 0.003） | 属实，已由 `2026-10-14-warmth-fixes.txt` 第 6 条改掉。你重 load 得到与 `Rates()` 相等、notes 为空，与我这边一致 |
+
+「配置问题绝不让引擎起不来」这句话**当时确实不成立**；现在这两条堵上了才成立——但我不会再把它写成绝对的话，边界情况总还会有。

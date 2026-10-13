@@ -119,6 +119,9 @@ class AxisSpec:
     threshold: float = 1.0
 
 
+_AXIS_NUMERIC = ("initial", "low", "high", "setpoint", "rate", "threshold")
+
+
 @dataclass
 class Config:
     thresholds: Thresholds = field(default_factory=Thresholds)
@@ -130,6 +133,9 @@ class Config:
     )
     # 两次主动开口之间的最短间隔（分钟）。0 = 不限制。
     speak_cooldown_minutes: float = 45.0
+    # 单次空闲 tick 最多按多少分钟推进。停机一夜不会一次性补满——
+    # 她并没有在关机时"等着"，一开机就扑上来也不像她。改这个值就能改这个取舍。
+    max_tick_minutes: float = MAX_TICK_MINUTES
     # 对方回话时的一次性回落：等待应当由"你出现了"解除，
     # 而不是她自己开了口就自我安慰（那样她会一路说下去，直到配额拦停）。
     # 数值是暂定的：真正该多大要等标注数据（见 docs/changes/2026-10-14-warmth-fixes.txt）。
@@ -315,10 +321,41 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
             continue
         allowed = {f for f in AxisSpec.__dataclass_fields__}
         fields = {k: v for k, v in item.items() if k in allowed}
+        bad = None
+        for key in _AXIS_NUMERIC:
+            if key not in fields:
+                continue
+            try:
+                number = float(fields[key])
+            except (TypeError, ValueError):
+                bad = f"{key}={fields[key]!r} 不是数字"
+                break
+            if not math.isfinite(number):
+                bad = f"{key} 不是有限值"
+                break
+            fields[key] = number
+        if bad:
+            # 类型不查的话，字符串会一路 load 成功，直到 tick 里做乘法才炸
+            notes.append(f"extra_axes[{index}]: {bad}，已忽略这条轴")
+            continue
+        if str(fields.get("kind", "regress")) not in ("regress", "driven"):
+            notes.append(f"extra_axes[{index}]: kind={fields.get('kind')!r} 不认识，按 regress 处理")
+            fields["kind"] = "regress"
+        fields["source"] = str(fields.get("source", "connection"))
         try:
             specs.append(AxisSpec(**fields))
         except TypeError as exc:
             notes.append(f"extra_axes[{index}]: {exc}，已忽略")
+
+    persona_raw = raw.get("persona")
+    if persona_raw is None:
+        persona = base.persona
+    elif isinstance(persona_raw, dict):
+        persona = {**base.persona, **{str(k): str(v) for k, v in persona_raw.items()}}
+    else:
+        # {**base.persona, **"miracii"} 会直接 TypeError——配置坏掉不该让引擎起不来
+        notes.append(f"persona: 不是对象（{type(persona_raw).__name__}），已用默认")
+        persona = base.persona
 
     config = Config(
         thresholds=thresholds,
@@ -327,7 +364,7 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
         user_state_lift=lifts,
         speak_cooldown_minutes=cooldown,
         reply_delta=reply,
-        persona={**base.persona, **(raw.get("persona") or {})},
+        persona=persona,
     )
     return config, notes
 
@@ -377,6 +414,7 @@ def state_to_dict(state: State) -> dict:
         "last_activity_at": state.last_activity_at.isoformat() if state.last_activity_at else None,
         "last_tick": state.last_tick.isoformat() if state.last_tick else None,
         "last_spoke_at": state.last_spoke_at.isoformat() if state.last_spoke_at else None,
+        "last_gates": list(state.last_gates),
         "user_state": state.user_state,
     }
 
@@ -409,6 +447,9 @@ def state_from_dict(payload: dict) -> State:
                 setattr(state, name, datetime.fromisoformat(raw))
             except ValueError:
                 pass
+    gates = payload.get("last_gates")
+    if isinstance(gates, list):
+        state.last_gates = [str(gate) for gate in gates]
     if payload.get("user_state"):
         state.user_state = str(payload["user_state"])
     return state
@@ -505,24 +546,32 @@ def ambient_tick(
 
     engine = Engine(resolved, state)
     fired = engine.tick(elapsed, now=stamp, minutes_since_message=minutes_since_message)
+    gates_now = gate_set(engine, fired)
+    loggable = gates_now != sorted(engine.state.last_gates or [])
+    engine.state.last_gates = gates_now
+    applied = min(elapsed, engine.config.max_tick_minutes)
     save_state(persona_id, engine.state, path=path)
     result = {
         "elapsed": round(elapsed, 2),
+        "applied": round(applied, 2),
+        "capped": elapsed > engine.config.max_tick_minutes,
         "first": False,
         "fired": fired,
-        "explain": engine.explain(fired),
+        "gates": gates_now,
+        "explain": engine.explain(),
         "style": engine.style_guidance(),
         "hook": engine.prompt_context(),
         "snapshot": engine.snapshot(),
         "notes": notes,
     }
-    if interesting(engine, fired):
+    if loggable:
         result["logged"] = append_log(
             persona_id,
             {
                 "kind": "tick",
                 "at": stamp.isoformat(timespec="seconds"),
                 "minutes": result["elapsed"],
+                "applied": result["applied"],
                 "gates": [entry["gate"] for entry in fired],
                 "explain": result["explain"],
                 "style": result["style"],
@@ -544,15 +593,25 @@ def log_path(persona_id: str | None = None) -> Path:
     return persona.folder(persona_id) / "memory" / LOG_NAME
 
 
-def interesting(engine: "Engine", fired: list[dict]) -> bool:
-    """只记值得回头看的时刻：有触发，或者逼近开口门槛。
+def gate_set(engine: "Engine", fired: list[dict]) -> list[str]:
+    """这一拍的"闸门画像"：触发了什么 + 是否已经逼近开口线。"""
+    gates = {entry["gate"] for entry in fired}
+    if engine.state.connection >= engine.effective_thresholds()["contact"] * APPROACH_RATIO:
+        gates.add("approaching")
+    return sorted(gates)
 
-    全记会淹掉人（每天几十行）；只记触发又会丢掉"憋着没说"——那恰恰是最该标注的样本。
+
+def interesting(engine: "Engine", fired: list[dict], *, previous: list[str] | None = None) -> bool:
+    """只记**画像变了**的那一拍。
+
+    两次修正的教训：
+    1. 早先只要"有触发"就记，而 `observation` 从 connection≥0.20 起每一拍都成立 → 24 小时 72/72 行；
+    2. 改成"开口类每次也记"之后，`contact` 一旦触发同样每拍都成立 → 24 小时仍有 69 行。
+    所以只认变化：跨线、被挡住、冷却开始/结束各记一次。真正说出口另由心跳记 `kind=speak`。
     """
-    if fired:
-        return True
-    gate = engine.effective_thresholds()
-    return engine.state.connection >= gate["observation"] and engine.state.connection >= gate["contact"] * APPROACH_RATIO
+    current = gate_set(engine, fired)
+    before = sorted(engine.state.last_gates or []) if previous is None else sorted(previous)
+    return current != before
 
 
 def append_log(persona_id: str | None, entry: dict, *, path: Path | None = None) -> Path:
@@ -679,6 +738,7 @@ class State:
     last_activity_at: datetime | None = None
     last_tick: datetime | None = None
     last_spoke_at: datetime | None = None
+    last_gates: list[str] = field(default_factory=list)
     user_state: str = "active"
 
     def axis(self, name: str) -> float:
@@ -750,7 +810,7 @@ class Engine:
         """推进 `minutes` 分钟并返回本次触发的动作。`minutes <= 0` 原样返回空。"""
         if not minutes or minutes <= 0:
             return []
-        mins = min(float(minutes), MAX_TICK_MINUTES)
+        mins = min(float(minutes), self.config.max_tick_minutes)
         stamp = now or _now()
         rates = self.config.rates
         state = self.state
@@ -902,6 +962,7 @@ class Engine:
         gate = self.effective_thresholds()
         trace: list[dict] = []
         opening: dict | None = None
+        held = False  # 已经在别处写下了"为什么没说"，就不要补一条会误导的 opening
 
         if state.connection >= gate["force"]:
             opening = _entry(
@@ -933,6 +994,7 @@ class Engine:
                         gap=state.pride - gate["pride_block"],
                     )
                 )
+                held = True  # 已经写下"被挡住"，不要再补一条 gap 为负的 opening
         elif state.connection >= gate["observation"]:
             span = max(1e-6, gate["contact"] - gate["observation"])
             opening = _entry(
@@ -942,7 +1004,6 @@ class Engine:
                 urgency=(state.connection - gate["observation"]) / span,
             )
 
-        held = False
         cooldown = self.cooldown_left()
         if opening is not None and opening["gate"] in {"contact", "force_contact"} and cooldown > 0:
             # 冷却：刚开口没多久就不再重复。否则她一跨线就会每 20 分钟说一次，

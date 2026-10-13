@@ -284,6 +284,16 @@ def run_warmth_tick(persona_id: str) -> dict:
         uttered = deliver_speak(persona_id, {"speak": True, "topic": topic}, packet, force=False)
         if uttered:
             warmth.note_spoke(persona_id)  # 冷却从"真的说出口"算起，不是从"想开口"算起
+            warmth.append_log(
+                persona_id,
+                {
+                    "kind": "speak",
+                    "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                    "topic": topic[:200],
+                    "text": uttered[:400],
+                    **(result.get("snapshot") or {}),
+                },
+            )
         _log("warmth spoke: " + (uttered[:80] if uttered else "(被挡下或没生成)"))
     return result
 

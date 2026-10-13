@@ -524,8 +524,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(warmth.seconds_until_due(now=start + timedelta(hours=3)), 0.0)
 
     def test_tick_minutes_comes_from_the_schedule(self):
-        with mock.patch.object(warmth, "tick_minutes", return_value=7.0):
-            self.assertEqual(warmth.tick_minutes(), 7.0)
+        """复核指出：早先这条把 tick_minutes 自己 mock 掉再断言它等于 7——等于什么都没测。"""
+        from app import supervisor
+
+        with mock.patch.object(supervisor, "parse_schedule", return_value={"tick_minutes": 7}):
+            self.assertEqual(warmth.tick_minutes("x"), 7.0)
+        with mock.patch.object(supervisor, "parse_schedule", return_value={}):
+            self.assertEqual(warmth.tick_minutes("x"), 20.0)  # 缺配置用默认
+        with mock.patch.object(supervisor, "parse_schedule", return_value={"tick_minutes": "soon"}):
+            self.assertEqual(warmth.tick_minutes("x"), 20.0)  # 坏值也用默认
+        with mock.patch.object(supervisor, "parse_schedule", return_value={"tick_minutes": 0}):
+            self.assertEqual(warmth.tick_minutes("x"), 20.0)  # 0 等于没配
 
     def test_ambient_tick_never_touches_memory_files(self):
         (self.root / "memory" / "working.txt").write_text("短期工作台", encoding="utf-8")
@@ -614,6 +623,27 @@ class LedgerTests(unittest.TestCase):
         warmth.ambient_tick(now=self.start, path=self.state, log=self.log)
         warmth.ambient_tick(now=self.start + timedelta(minutes=20), path=self.state, log=self.log)
         self.assertFalse(self.log.exists())  # connection 还很浅，没什么可回看的
+
+    def test_a_repeating_gate_is_only_recorded_once(self):
+        """复核指出：observation 从 0.20 起每拍都成立，早先会记满 72/72 行。"""
+        eng = warmth.Engine()
+        eng.state.connection = 0.25
+        observation = [{"gate": "observation", "fired": True, "detail": "", "gap": None, "urgency": 0.1}]
+        self.assertTrue(warmth.interesting(eng, observation, previous=[]))  # 刚跨进观察带
+        first = warmth.gate_set(eng, observation)
+        self.assertFalse(warmth.interesting(eng, observation, previous=first))  # 画像没变就不再记
+
+    def test_a_whole_day_records_a_handful_of_lines(self):
+        state = warmth.State(connection=0.25)
+        state.last_tick = datetime(2026, 10, 14, 0, 0, tzinfo=timezone.utc)
+        warmth.save_state(None, state, path=self.state)
+        moment = state.last_tick
+        for index in range(72):  # 24 小时，20 分钟一拍
+            moment = moment + timedelta(minutes=20)
+            warmth.ambient_tick(now=moment, minutes_since_message=20 * (index + 1), path=self.state, log=self.log)
+        rows = warmth.read_log(path=self.log)
+        self.assertLessEqual(len(rows), 12)
+        self.assertGreaterEqual(len(rows), 1)
 
     def test_an_approaching_tick_is_written_down(self):
         eng = warmth.Engine()

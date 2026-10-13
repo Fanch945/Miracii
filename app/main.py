@@ -387,7 +387,9 @@ async def chat(body: ChatRequest) -> StreamingResponse:
     user_msg = db.add_message(sid, "user", stored)
     files.append_turn(sid, speaker, "user", stored.replace("\n", " "), user_msg["created_at"])
     try:
-        warmth.on_user_message(persona.active_id())  # 积温：等待由"你出现了"解除
+        # 这条消息存在 sid 上，积温就该落到同一个人的格子上——
+        # 直接写 active_id() 在多个人格之间会回落错人（复核指出）。
+        warmth.on_user_message(sid if any(p["id"] == sid for p in persona.list_personas()) else persona.active_id())
     except Exception:
         pass  # 积温出问题不该影响聊天本身
     history = _llm_history(sid, current_images=saved_images)

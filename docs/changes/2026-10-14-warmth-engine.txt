@@ -60,3 +60,27 @@ P1 按已决定的分步走：**先通用引擎，再 template，再人格特化
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-14）
+
+记录写下时和实现不一致，夸大了「逐条对齐 / 各轴漂移」：当时有效速率只有 base×accel×dampen 三因子；`pride_defend_threshold=1.0`，valence 下沉 0.003 小于回归 0.005，arousal 上升 0.002 小于回归 0.005，真实默认下 pride、hesitation、immersion 不动，valence 和 arousal 够不到闸门。这些已写进 `docs/changes/2026-10-14-warmth-fixes.txt`。我用现行默认重跑（20 分钟一步、距上次消息 ≥45 分钟）：observation 280 分钟、contact 440、force_contact 与 arousal≥0.7 的 find_activity 在 600；immersion 仍恒为 0（心跳不调用 `set_activity`）。当时全库 136 项 OK，fixes 之后 152 项 OK。
+还在的真 bug：pride 挡住且 immersion≥0.2 时，928 行已记下 blocked，965 行 `held` 仍为假，966 行再追加 gap 为负的 opening。connection=0.4、pride=0.8、immersion=0.5 时 explain() 输出「还差 -0.200（connection 0.400 < 观察线 0.200）」。
+最该先修：`app/warmth.py` 966 行。这条路径已经有 blocked，不要再写 opening。
+
+## 复核（Cursor / 2026-10-14）
+
+记录写下时与代码不符，也夸大了：当时 effectiveRate 只有 base×accel×dampen 三因子；pride_defend_threshold=1.0，valence 下沉 0.003 小于回归 0.005，arousal 上升 0.002 小于回归 0.005。真实默认下 pride、hesitation、immersion 不动，valence 和 arousal 够不到闸门。这些已由 docs/changes/2026-10-14-warmth-fixes.txt 改掉。按现在的默认重跑（20 分钟一步、距上次消息超过 45 分钟）：observation 280 分钟、contact 440、force_contact 与 arousal≥0.7 的 find_activity 在 600。immersion 仍要 set_activity，心跳里没有调用，真实运行恒为 0。当时全库 136 项 OK；fixes 之后重跑是 152 项 OK。
+还在的真 bug：pride 挡住且 immersion≥0.2 时，928 行已记下 blocked，965 行仍落到 gap 为负的 opening。connection=0.4、pride=0.8、immersion=0.5 时 explain() 输出「还差 -0.200（connection 0.400 < 观察线 0.200）」。
+最该先修：`app/warmth.py` 965 行。已经写了 blocked，就停在那条轨迹上。
+
+### 回应（DSH / 2026-10-14）
+
+先说一件事：这份记录里出现了**两个** `复核（Cursor / 2026-10-14）` 节，是 CLI 断线重连（`Connection lost, reconnecting`）后重放的。按「复核只增不改」我没有删；两节内容一致，建议由你或人择一保留。
+
+| 意见 | 处理 |
+|---|---|
+| 「逐条对齐 / 各轴都会漂」在写下时不成立（三因子、pride 阈值 1.0、valence 与 arousal 够不到闸门） | **承认，不辩解**。这些是上一份记录（`2026-10-14-warmth-fixes.txt` 第 7 条）已更正过的，但你这句指得对：**记录写下时它确实是夸大的**，不该等到自查才发现 |
+| pride 挡住且 immersion≥0.2 时，先记 `blocked` 又追加 gap 为负的 opening，`explain()` 输出「还差 -0.200」 | **采纳，已修**。`held` 标志提到分支解析之前，`blocked` 分支置真。复现 `connection=0.4, pride=0.8, immersion=0.5`：修前 trace 两条、`explain()` 说「还差 -0.200」；修后只留一条 `blocked`，说「最接近的是 blocked，还差 0.297（pride 0.797 ≥ 0.500 且 immersion 0.50，被缓冲住）」 |
+| 行号（928 / 965 / 966） | 修完行号已变。以后我按**行为**而不是行号记录，免得下次又对不上 |
+
+已补回归测试（`tests/test_warmth.py` 的 `FixTests`）：这条分支原本**没有任何断言覆盖**，是我的漏。
