@@ -25,3 +25,9 @@ packaging/android/app/build/
 packaging/android/local.properties
 .cursor/
 persona/miracii/
+# 程序自己生成的派生文件：删掉即回滚，任何人格的都不该进仓库
+persona/*/memory/starmap.jsonl
+persona/*/memory/warmth-state.json
+persona/*/memory/warmth-log.jsonl
+# 临时人格（复核与探针用的沙盒）
+persona/test/
