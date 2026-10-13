@@ -51,3 +51,28 @@
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-13）
+星图不写记忆正文。唯一写盘是 `app/starmap.py` 233 行，追加 `starmap.jsonl`。会写正文、星图没有调用：`clock.py` 437 行写 episodic，658 行追加 impression，662 行覆盖 `working.txt`；`supervisor.py` 493-495 行经 506 行追加 facts / people / calendar；`studio.py` 77 行可覆盖 persona 下任意已有 txt，包括记忆正文，也能整文件覆盖这份 jsonl（`files.py` 278 行把 `memory/` 下 jsonl 列进目录，170 行后缀含 jsonl）。
+真实风险：146 行用 mtime 当 `created`，101 行解析失败就变成今天。9 条 lore 正文没有日期，`created` 等于 mtime；`lore/entries/soxkno.txt#0` 记成 2026-10-04，mag 2.7，亮过全部 semantic。指纹不变则该日期不重算。281 行按 `(file, block)` 把旧 `rc` / `last` 抄到新正文。临时目录在 facts 头部插一行后：新槽 rc=1、created=2026-10-01，原第一行到 block 1 后 rc=0。账本 29 行 rc 全 0，已入册块 drift 0，排序还没被这行伤到。
+过度设计：空壳星 `memory/episodic/2026-09-21.txt#0`。那是 `clock.py` 434 行的 `# episodic <日期>`，没有 keys，检索不会命中。六档词表是 §3 的兜底；29 星里 ew 0.3 有 25 个、ew 0.6 有 4 个，`decay_lambda` 74-82 行把 ew<0.4 收成同一条 λ。
+与 docs/STARMAP.txt 不一致：§2 的 `created` 只从路径或块头解析，143-145 行取正文里任意位置的第一个日期；现有 semantic 十条的第一个日期等于第三列。入册时 `last` 应等于 `created`，158 行写 None，29 行 `last` 都是 null。§7 新块作为新星点入册，281 行继承 rc。§4 的 level 2 lore 是目录 `lore/entries/stories`，204 行按 `form==story`；`lore/entries/clothshelf/wintercloth.txt` 不在该目录，level=2。`src` 在 186 与 199 行是「kind:文件名」，7 条 facts 共用 `semantic:facts.txt`。扁平 `file` / `block` / `fp` 可以留，只有本模块在读。§7「标 deferred」和「不做任何写入」互相打架；278 行只加计数，不写 `state=deferred`。
+先修 `app/starmap.py` 146 行。抽掉 mtime 之后，101 行仍会把空 `created` 变成今天，这 9 条 lore 的 decay 会变成 1，比 mag 2.7 / 5.1 更亮。缺日期不要参与亮度。
+验证：`.venv\Scripts\python.exe -m unittest discover -s tests -t .` → Ran 57 tests in 0.398s，OK (skipped=1)。`.venv\Scripts\python.exe -m app.starmap --report` → 29 个活跃星点，rc 全 0；最亮 `memory/impression/2026-10-13.txt#0` mag 1.0；`lore/entries/soxkno.txt#0` mag 2.7。未跑 `--sync`。
+
+## 回应（DSH / 2026-10-13）
+
+| 复核意见 | 处理 |
+|---|---|
+| `starmap.py:146` 用 mtime 当 `created`，9 条 lore 因此亮过 semantic | **采纳**。`_date_of` 删掉 mtime 分支，且解析不出就返回 `None`——**不再退化成"今天"**。无日期的星不老化（`decay=1.0`）也**不计亮度**（`brightness` 返回 `None`），报告里单列"无日期（作者设定）"一格 |
+| `281` 按 `(file, block)` 把旧 `rc` / `last` 抄给新正文 | **采纳**。指纹变 = 新星，**不继承任何历史**。理由正是你给的：块位置会随插入漂移，继承等于把 A 的次数记到 B 头上 |
+| 空壳星 `memory/episodic/2026-09-21.txt#0`（`# episodic` 无 keys）是过度设计 | **不处理**。它是内容的一部分，登记它才是诚实的；检索永不命中，无害 |
+| 六档词表在真实数据上几乎不起作用（29 星里 25 个 ew 0.3） | **承认，不辩解**。`ew` 的正式来源应是监督在写入时打分（P2）；当前这层只是占位，也不夸大它的效果 |
+| `src` 只到文件级（7 条 facts 共用一个） | **采纳**。改为 `kind:file#block`，逐块唯一 |
+| §7「标 deferred」与「不做任何写入」打架 | **采纳**。`deferred` 只是**计数**，原样重试**不写任何行**；规范已改写 |
+| §2 `created` 说"路径或块头"，实现取正文第一个日期 | **采纳**。规范改为"先看文件名，再看正文第一个日期，都没有就是空" |
+| §7「入册时 `last` 等于 `created`」与实现的 `None` 不符 | **采纳**。`last` 是"上次被注入"，入册为 `null`；规范已改写 |
+| `studio.py:77` 能整文件覆盖索引；`files.py:278` 把它列进控制台 | **采纳**。`studio.write_file` 拒绝写 `starmap.jsonl`；控制台文件列表跳过它 |
+| 只跑 `--sync` 才入册，树上 33 块只登记 29 | **采纳（最该先修的一条）**。新增两个自动同步点：应用启动（`main.lifespan`）与每次心跳 tick（`heartbeat.tick_once`），都包了异常隔离。实测补登记 4 块 → `{"added": 4, "retired": 0, "deferred": 29}` |
+
+改动后的验证：`Ran 62 tests / OK (skipped=1)`（新增 5 项覆盖上述修复）；`persona/miracii` 下记忆文件仍未被改动。

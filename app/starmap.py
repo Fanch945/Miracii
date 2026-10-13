@@ -105,7 +105,11 @@ def decay_factor(star: dict, today: date | None = None) -> float:
     """Ageing is intrinsic: it counts from `created`, not from the last time it was read.
 
     Otherwise a line that keeps being injected would reset its own clock and never fade.
+    Undated stars (authored canon) do not age at all — but they make no brightness claim
+    either, see `brightness`.
     """
+    if not star.get("created"):
+        return 1.0
     now = today or date.today()
     days = max(0, (now - as_date(star.get("created"))).days)
     return math.exp(-decay_lambda(float(star.get("ew", EW_FALLBACK))) * days)
@@ -121,8 +125,14 @@ def novelty_factor(read_count: int) -> float:
     return max(NOVELTY_FLOOR, penalty)
 
 
-def brightness(star: dict, today: date | None = None) -> float:
-    """How bright this memory looks now. Rehearsal brightens it — used for feel, not ranking."""
+def brightness(star: dict, today: date | None = None) -> float | None:
+    """How bright this memory looks now, or `None` when it is undated.
+
+    Undated entries are authored canon: they never fade, so a magnitude would be meaningless
+    (and would outrank lived memories). `report` lists them separately.
+    """
+    if not star.get("created"):
+        return None
     return min(1.0, decay_factor(star, today) + recall_bonus(star.get("rc", 0)))
 
 
@@ -136,14 +146,17 @@ def _mood_of(body: str) -> str:
     return found.group(1) if found else ""
 
 
-def _date_of(path: Path, body: str) -> str:
+def _date_of(path: Path, body: str) -> str | None:
+    """The date in the file name wins, else the first date in the block. **Never mtime.**
+
+    Authored canon carries no date at all, and inventing one (mtime, or "today") would let a
+    world-book entry outshine memories that were actually lived. Undated stars stay undated.
+    """
     found = DATE_IN_NAME.search(path.name)
     if found:
         return found.group(1)
     found = DATE_IN_NAME.search(body or "")
-    if found:
-        return found.group(1)
-    return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
+    return found.group(1) if found else None
 
 
 def _star(root: Path, path: Path, block: int, body: str, kind: str, level: int, src: str) -> dict:
@@ -157,7 +170,7 @@ def _star(root: Path, path: Path, block: int, body: str, kind: str, level: int, 
         "rc": 0,
         "last": None,
         "created": _date_of(path, body),
-        "src": src,
+        "src": f"{src}#{block}",
         "state": "active",
     }
 
@@ -257,7 +270,8 @@ def sync(persona_id: str | None = None, *, today: date | None = None) -> dict:
 
     - unseen block        -> new star
     - same fingerprint    -> deferred, no write at all (an identical retry costs nothing)
-    - changed fingerprint -> old star retired, block enters again as a new star
+    - changed fingerprint -> old star retired, and the block enters as a **new** star:
+      no history is inherited, because block positions shift when a line is inserted
     - vanished block      -> retired
     """
     stamp = (today or date.today()).isoformat()
@@ -278,7 +292,7 @@ def sync(persona_id: str | None = None, *, today: date | None = None) -> dict:
             deferred += 1
             continue
         writes.append({**old, "state": "retired", "retired_on": stamp})
-        writes.append({**star, "rc": int(old.get("rc") or 0), "last": old.get("last")})
+        writes.append(star)
         added += 1
         retired += 1
 
@@ -318,30 +332,44 @@ def bump_many(persona_id: str | None, fingerprints: list[str], *, today: date | 
 
 
 def project(persona_id: str | None = None, *, today: date | None = None) -> list[dict]:
-    """Read-only view: every active star with its current brightness and magnitude."""
+    """Read-only view: every active star with its current brightness and magnitude.
+
+    `brightness` / `mag` are `None` for undated (authored) stars — see `brightness`.
+    """
     now = today or date.today()
     out: list[dict] = []
     for star in load(persona_id).values():
         if star.get("state") != "active":
             continue
         value = brightness(star, now)
-        out.append({**star, "brightness": round(value, 4), "mag": magnitude(value)})
+        out.append(
+            {
+                **star,
+                "brightness": None if value is None else round(value, 4),
+                "mag": None if value is None else magnitude(value),
+            }
+        )
     return out
 
 
 def report(persona_id: str | None = None, *, limit: int = 8, today: date | None = None) -> str:
-    """Plain-text projection: brightest and dimmest memories, for a human glance."""
+    """Plain-text projection: brightest, dimmest, and the undated shelf, for a human glance."""
     stars = project(persona_id, today=today)
     if not stars:
         return "星图：还没有星点（先跑一次 sync）"
-    ordered = sorted(stars, key=lambda s: s["brightness"], reverse=True)
-    lines = [f"星图：{len(stars)} 个活跃星点"]
+    dated = sorted((s for s in stars if s["brightness"] is not None), key=lambda s: s["brightness"], reverse=True)
+    undated = [s for s in stars if s["brightness"] is None]
+    lines = [f"星图：{len(stars)} 个活跃星点（{len(undated)} 个无日期，不参与亮度）"]
     lines.append("最亮：")
-    for star in ordered[:limit]:
+    for star in dated[:limit]:
         lines.append(f"  mag {star['mag']:>4}  ew {star['ew']:<4} rc {star['rc']:<3} {star['file']}#{star['block']}")
     lines.append("最暗：")
-    for star in ordered[-limit:][::-1]:
+    for star in dated[-limit:][::-1]:
         lines.append(f"  mag {star['mag']:>4}  ew {star['ew']:<4} rc {star['rc']:<3} {star['file']}#{star['block']}")
+    if undated:
+        lines.append("无日期（作者设定，不老化也不计亮度）：")
+        for star in undated[:limit]:
+            lines.append(f"    ew {star['ew']:<4} rc {star['rc']:<3} {star['file']}#{star['block']}")
     return "\n".join(lines)
 
 

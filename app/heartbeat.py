@@ -7,7 +7,7 @@ import socket
 import time
 from datetime import datetime
 
-from . import clock, db, files, notices, notify, persona, supervisor, wake
+from . import clock, db, files, notices, notify, persona, starmap, supervisor, wake
 from .files import DATA_DIR
 from .keys import load_keys
 
@@ -78,6 +78,10 @@ def _ask_sumapi(skill: str, packet: dict, key, *, attempts: int = 3) -> dict:
 
 def tick_once(persona_id: str | None = None, phase: str = "idle") -> dict:
     pid = persona_id or persona.active_id()
+    try:
+        starmap.sync(pid)
+    except Exception as exc:  # the star map must never block a tick
+        _log(f"starmap sync failed: {exc}")
     catch_up = phase in {"stm", "routine", "daily", "weekly"} and clock.phase_is_late(pid, phase)
     clock.begin_tick(pid, phase)
     packet = supervisor.build_packet(pid, phase=phase)

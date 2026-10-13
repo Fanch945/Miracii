@@ -71,9 +71,13 @@ def read_file(persona_id: str, rel: str) -> str:
 
 
 def write_file(persona_id: str, rel: str, content: str) -> None:
+    from .starmap import INDEX_NAME
+
     path = _file(persona_id, rel)
     if not path.is_file():
         raise FileNotFoundError("文件不存在，先新建")
+    if path.name == INDEX_NAME:
+        raise ValueError(f"{INDEX_NAME} 是星图索引，由程序维护，不要在设定页改它")
     path.write_text(content, encoding="utf-8")
 
 

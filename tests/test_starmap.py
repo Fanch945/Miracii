@@ -232,5 +232,50 @@ class RecallTests(Tree):
         self.assertIn("还没有星点", starmap.report(today=TODAY))
 
 
+class ReviewFixTests(Tree):
+    """Cases raised by the reviewer: dates must not be invented, history must not be inherited."""
+
+    def test_authored_canon_has_no_date_and_no_brightness(self):
+        self.lore_entry()
+        star = starmap.blocks()[0]
+        self.assertIsNone(star["created"])
+        self.assertEqual(starmap.decay_factor(star, TODAY), 1.0)
+        self.assertIsNone(starmap.brightness(star, TODAY))
+
+    def test_mtime_never_becomes_created(self):
+        import os
+
+        path = self.lore_entry()
+        os.utime(path, (0, 0))  # touch it: a fresh mtime must not make canon look fresh
+        self.assertIsNone(starmap.blocks()[0]["created"])
+
+    def test_report_puts_undated_stars_on_their_own_shelf(self):
+        self.impression()
+        self.lore_entry()
+        starmap.sync(today=TODAY)
+        text = starmap.report(today=TODAY)
+        self.assertIn("无日期（作者设定", text)
+        self.assertIn("lore/entries/labs.txt#0", text)
+        self.assertNotIn("mag None", text)
+
+    def test_an_edited_block_does_not_inherit_history(self):
+        path = self.impression()
+        starmap.sync(today=TODAY)
+        file = starmap.blocks()[0]["file"]
+        starmap.bump(None, file, 0, today=TODAY)
+        self.assertEqual(starmap.load()[(file, 0)]["rc"], 1)
+        edited = path.read_text(encoding="utf-8").replace("午饭后靠在一起", "午饭后各自忙")
+        path.write_text(edited, encoding="utf-8")
+        starmap.sync(today=TODAY)
+        self.assertEqual(starmap.load()[(file, 0)]["rc"], 0)  # new content, new star
+
+    def test_src_identifies_the_block_not_just_the_file(self):
+        self.impression()
+        self.semantic()
+        srcs = [star["src"] for star in starmap.blocks()]
+        self.assertEqual(len(srcs), len(set(srcs)))
+        self.assertTrue(all("#" in src for src in srcs))
+
+
 if __name__ == "__main__":
     unittest.main()

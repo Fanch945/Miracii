@@ -278,6 +278,8 @@ def list_readable(only: str | None = None) -> dict:
                 for path in mem_root.rglob("*"):
                     if path.suffix.lower() not in READABLE_SUFFIX or not path.is_file():
                         continue
+                    if path.name == "starmap.jsonl":
+                        continue  # star-map index, not console content
                     rel = path.relative_to(mem_root).as_posix()
                     bucket(pid)["memory"].append(
                         _item(f"memory/{pid}/{rel}", path, "memory", rel)

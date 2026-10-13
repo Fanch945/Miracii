@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import APP_CHANNEL, APP_VERSION, clock, db, files, media, notices, persona, studio
+from . import APP_CHANNEL, APP_VERSION, clock, db, files, media, notices, persona, starmap, studio
 from .llm import LlmError, MODEL, stream_reply
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -21,6 +21,10 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     db.init_db()
+    try:
+        starmap.sync(persona.active_id())
+    except Exception:  # a stale index must not stop the app from serving
+        pass
     yield
 
 
