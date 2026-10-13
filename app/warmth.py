@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -416,6 +416,7 @@ def ambient_tick(
     minutes_since_message: float | None = None,
     config: Config | None = None,
     path: Path | None = None,
+    log: Path | None = None,
 ) -> dict:
     """空闲 tick：推进积温、落盘、返回这次触发了什么。
 
@@ -436,7 +437,7 @@ def ambient_tick(
     engine = Engine(resolved, state)
     fired = engine.tick(elapsed, now=stamp, minutes_since_message=minutes_since_message)
     save_state(persona_id, engine.state, path=path)
-    return {
+    result = {
         "elapsed": round(elapsed, 2),
         "first": False,
         "fired": fired,
@@ -446,6 +447,155 @@ def ambient_tick(
         "snapshot": engine.snapshot(),
         "notes": notes,
     }
+    if interesting(engine, fired):
+        result["logged"] = append_log(
+            persona_id,
+            {
+                "kind": "tick",
+                "at": stamp.isoformat(timespec="seconds"),
+                "minutes": result["elapsed"],
+                "gates": [entry["gate"] for entry in fired],
+                "explain": result["explain"],
+                "style": result["style"],
+                **result["snapshot"],
+            },
+            path=log,
+        )
+    return result
+
+
+# ── 台账与标注 ──────────────────────────────────────
+LOG_NAME = "warmth-log.jsonl"
+APPROACH_RATIO = 0.8  # connection 到了有效门槛的八成，就算"快憋不住了"，值得记一笔
+
+
+def log_path(persona_id: str | None = None) -> Path:
+    from . import persona
+
+    return persona.folder(persona_id) / "memory" / LOG_NAME
+
+
+def interesting(engine: "Engine", fired: list[dict]) -> bool:
+    """只记值得回头看的时刻：有触发，或者逼近开口门槛。
+
+    全记会淹掉人（每天几十行）；只记触发又会丢掉"憋着没说"——那恰恰是最该标注的样本。
+    """
+    if fired:
+        return True
+    gate = engine.effective_thresholds()
+    return engine.state.connection >= gate["observation"] and engine.state.connection >= gate["contact"] * APPROACH_RATIO
+
+
+def append_log(persona_id: str | None, entry: dict, *, path: Path | None = None) -> Path:
+    target = path or log_path(persona_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return target
+
+
+def read_log(
+    persona_id: str | None = None,
+    *,
+    days: float | None = None,
+    path: Path | None = None,
+    now: datetime | None = None,
+) -> list[dict]:
+    target = path or log_path(persona_id)
+    if not target.is_file():
+        return []
+    cutoff = None
+    if days:
+        cutoff = (now or _now()) - timedelta(days=days)
+    rows: list[dict] = []
+    for raw in target.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not raw.strip():
+            continue
+        try:
+            row = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        if cutoff is not None:
+            stamp = _parse_stamp(row.get("at"))
+            if stamp is None or stamp < cutoff:
+                continue
+        rows.append(row)
+    return rows
+
+
+def _parse_stamp(raw) -> datetime | None:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.astimezone()
+
+
+LABELS = ("should_speak", "ok_silent", "na")
+
+
+def mark(
+    persona_id: str | None = None,
+    text: str = "",
+    *,
+    label: str = "should_speak",
+    path: Path | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """给此刻贴一条标注：她该开口 / 沉默是对的 / 说不清。
+
+    这是阈值校准的唯一依据——先攒 10–20 条，再动那几个数。
+    """
+    stamp = now or _now()
+    state, _ = load_state(persona_id)
+    entry = {
+        "kind": "mark",
+        "at": stamp.isoformat(timespec="seconds"),
+        "label": label if label in LABELS else "na",
+        "text": str(text or "").strip(),
+        **state_to_dict(state),
+    }
+    append_log(persona_id, entry, path=path)
+    return entry
+
+
+def review(persona_id: str | None = None, *, days: float = 3, limit: int = 60, path: Path | None = None, now: datetime | None = None) -> str:
+    """把最近的台账排成能一眼扫过的样子——校准阈值前先看这个。"""
+    rows = read_log(persona_id, days=days, path=path, now=now)
+    if not rows:
+        return f"近 {days:g} 天没有记录（她还没醒过，或者一直没逼近门槛）"
+    ticks = [row for row in rows if row.get("kind") == "tick"]
+    marks = [row for row in rows if row.get("kind") == "mark"]
+    lines = [f"近 {days:g} 天：{len(ticks)} 次值得记的 tick，{len(marks)} 条人工标注"]
+    if marks:
+        lines.append("人工标注：")
+        for row in marks[-limit:]:
+            lines.append(f"  {_short_time(row.get('at'))}  [{row.get('label')}] {row.get('text') or '（无说明）'}")
+    lines.append("最近的动作：")
+    for row in ticks[-limit:]:
+        gates = "/".join(row.get("gates") or []) or "无触发"
+        lines.append(
+            f"  {_short_time(row.get('at'))}  c{_num(row.get('connection'))} p{_num(row.get('pride'))}"
+            f" v{_num(row.get('valence'))} a{_num(row.get('arousal'))} i{_num(row.get('immersion'))}"
+            f" h{_num(row.get('hesitation'))}  {gates}"
+        )
+    return "\n".join(lines)
+
+
+def _short_time(raw) -> str:
+    stamp = _parse_stamp(raw)
+    return stamp.strftime("%m-%d %H:%M") if stamp else "??"
+
+
+def _num(value) -> str:
+    try:
+        return f"{float(value):+.2f}"
+    except (TypeError, ValueError):
+        return " ?  "
 
 
 @dataclass
@@ -841,11 +991,23 @@ if __name__ == "__main__":
     parser.add_argument("--show", action="store_true", help="只显示当前生效的旋钮与配置问题")
     parser.add_argument("--once", action="store_true", help="跑一次真实的空闲 tick（会落盘状态）")
     parser.add_argument("--state", action="store_true", help="显示已保存的状态与距下次到点还有多久")
+    parser.add_argument("--mark", default=None, help="给此刻贴一条人工标注（配合 --label）")
+    parser.add_argument("--label", default="should_speak", choices=list(LABELS), help="标注结论")
+    parser.add_argument("--review", action="store_true", help="列出最近的台账与人工标注")
+    parser.add_argument("--days", type=float, default=3.0, help="配合 --review：看最近几天")
     options = parser.parse_args()
 
     from . import persona
 
     pid = options.persona or persona.active_id()
+
+    if options.mark is not None:
+        print(json.dumps(mark(pid, options.mark, label=options.label), ensure_ascii=False, indent=2))
+        raise SystemExit(0)
+
+    if options.review:
+        print(review(pid, days=options.days))
+        raise SystemExit(0)
 
     if options.write_template:
         target = write_template(pid, overwrite=options.overwrite)

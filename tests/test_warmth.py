@@ -581,5 +581,108 @@ class HeartbeatWiringTests(unittest.TestCase):
         self.assertEqual(speak.call_count, 0)
 
 
+class LedgerTests(unittest.TestCase):
+    """台账与人工标注：校准阈值的唯一依据。"""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="warmth-led-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        (self.root / "memory").mkdir(parents=True, exist_ok=True)
+        patcher = mock.patch.object(persona, "folder", lambda persona_id=None: self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.state = self.root / "memory" / warmth.STATE_NAME
+        self.log = self.root / "memory" / warmth.LOG_NAME
+        self.start = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+
+    def test_a_boring_tick_is_not_written_down(self):
+        eng = warmth.Engine()
+        self.assertFalse(warmth.interesting(eng, []))
+        warmth.ambient_tick(now=self.start, path=self.state, log=self.log)
+        warmth.ambient_tick(now=self.start + timedelta(minutes=20), path=self.state, log=self.log)
+        self.assertFalse(self.log.exists())  # connection 还很浅，没什么可回看的
+
+    def test_an_approaching_tick_is_written_down(self):
+        eng = warmth.Engine()
+        eng.state.connection = eng.effective_thresholds()["contact"] * 0.9
+        self.assertTrue(warmth.interesting(eng, []))
+
+    def test_a_fired_tick_is_written_down(self):
+        eng = warmth.Engine()
+        eng.state.connection = 0.9
+        self.assertEqual([entry["gate"] for entry in eng.check() if entry["fired"]][0], "force_contact")
+        self.assertTrue(warmth.interesting(eng, [entry for entry in eng.check() if entry["fired"]]))
+
+    def test_an_ambient_tick_logs_its_axes_and_gates(self):
+        state = warmth.State(connection=0.45)
+        state.last_tick = self.start - timedelta(minutes=30)
+        warmth.save_state(None, state, path=self.state)
+        result = warmth.ambient_tick(now=self.start, path=self.state, log=self.log)
+        self.assertGreaterEqual(result["elapsed"], 30.0)
+        self.assertIn("logged", result)
+        rows = warmth.read_log(path=self.log)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["kind"], "tick")
+        self.assertIn("connection", row)
+        self.assertTrue(row["gates"])
+
+    def test_days_filter_keeps_only_recent_rows(self):
+        warmth.append_log(
+            None,
+            {"kind": "tick", "at": (self.start - timedelta(days=9)).isoformat(), "gates": ["observation"]},
+            path=self.log,
+        )
+        warmth.append_log(
+            None, {"kind": "tick", "at": self.start.isoformat(), "gates": ["contact"]}, path=self.log
+        )
+        self.assertEqual(len(warmth.read_log(path=self.log)), 2)
+        recent = warmth.read_log(path=self.log, days=3, now=self.start)
+        self.assertEqual(len(recent), 1)
+        self.assertEqual(recent[0]["gates"], ["contact"])
+
+    def test_broken_lines_in_the_ledger_are_skipped(self):
+        self.log.write_text('{"kind": "tick"}\nnot json\n\n', encoding="utf-8")
+        self.assertEqual(len(warmth.read_log(path=self.log)), 1)
+
+    def test_mark_records_the_verdict_and_the_state_at_that_moment(self):
+        warmth.save_state(None, warmth.State(connection=0.44, hesitation=0.5), path=self.state)
+        entry = warmth.mark(None, "他刚说很难过的事，她该开口", label="should_speak", path=self.log, now=self.start)
+        self.assertEqual(entry["label"], "should_speak")
+        self.assertAlmostEqual(entry["connection"], 0.44)
+        rows = warmth.read_log(path=self.log)
+        self.assertEqual(rows[0]["text"], "他刚说很难过的事，她该开口")
+
+    def test_an_unknown_label_degrades_to_na(self):
+        entry = warmth.mark(None, "说不清", label="随便写的", path=self.log, now=self.start)
+        self.assertEqual(entry["label"], "na")
+
+    def test_review_reports_both_kinds_of_rows(self):
+        warmth.append_log(
+            None,
+            {"kind": "tick", "at": self.start.isoformat(), "connection": 0.4, "pride": 0.6, "valence": -0.1,
+             "arousal": 0.2, "immersion": 0.1, "hesitation": 0.3, "gates": ["find_activity"]},
+            path=self.log,
+        )
+        warmth.mark(None, "这里其实该开口", path=self.log, now=self.start)
+        text = warmth.review(path=self.log, days=3, now=self.start)
+        self.assertIn("1 次值得记的 tick", text)
+        self.assertIn("1 条人工标注", text)
+        self.assertIn("find_activity", text)
+        self.assertIn("这里其实该开口", text)
+
+    def test_review_on_an_empty_ledger_says_so(self):
+        self.assertIn("没有记录", warmth.review(path=self.log, now=self.start))
+
+    def test_the_ledger_is_a_new_file_and_memory_is_untouched(self):
+        (self.root / "memory" / "working.txt").write_text("短期工作台", encoding="utf-8")
+        before = hashlib.sha1((self.root / "memory" / "working.txt").read_bytes()).hexdigest()
+        warmth.mark(None, "标注", path=self.log, now=self.start)
+        warmth.append_log(None, {"kind": "tick", "at": self.start.isoformat(), "gates": []}, path=self.log)
+        after = hashlib.sha1((self.root / "memory" / "working.txt").read_bytes()).hexdigest()
+        self.assertEqual(before, after)
+        self.assertTrue(self.log.is_file())
+
+
 if __name__ == "__main__":
     unittest.main()

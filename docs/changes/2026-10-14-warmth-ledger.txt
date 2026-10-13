@@ -1,0 +1,63 @@
+# P1 第四步：可标注台账（校准的依据）
+
+- 日期：2026-10-14
+- 作者：DSH（DeepSeek Harness agent）
+- 关联提交：本文件所在提交
+- 关联设计文档：[docs/reference/jiwen-spec.txt](../reference/jiwen-spec.txt)
+- 前置记录：[2026-10-14-warmth-runtime.txt](2026-10-14-warmth-runtime.txt)
+
+## 背景
+
+P1 的最后一件：**让"想开口没开口"这件事能被记下来并标注**。
+
+阈值现在是前辈的调参起点，**没有按 Miracii 校准过**。校不准的原因不是缺参数，是**缺样本**——
+哪些时刻她其实该开口、哪些时刻沉默是对的，只有人能判。她自己在印象里也提过同一个要求：
+"先把她最近主动开口或憋着没说的场景记下来、标情绪，攒一二十条再定，说这样定出来的才是她。"
+
+这一步就是给那条要求造工具。
+
+## 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `app/warmth.py` | 台账层：`interesting()`（该不该记）/ `append_log` / `read_log` / `mark` / `review`；`ambient_tick` 在值得记时自动追加一行；命令行加 `--mark` / `--label` / `--review` / `--days` |
+| `tests/test_warmth.py` | +11 项：无聊的 tick 不记、逼近门槛要记、有触发要记、tick 行带六轴与闸门、天数过滤、坏行跳过、标注带当时的轴快照、未知标签降级、review 两种行、空台账、**台账是新文件且不碰记忆** |
+| `README.md` | 记忆文件表补 `warmth-log.jsonl` |
+
+三条设计决定：
+
+1. **不是每次都记**：全记会淹掉人（每天几十行），只记触发又会丢掉"憋着没说"——那恰恰是最该标注的样本。
+   折中：**有触发**，或 **connection 到了有效门槛的八成**（`APPROACH_RATIO = 0.8`）才记一行。
+2. **标注带当时的轴快照**：`--mark` 会把那一刻的六轴一起写进去。将来校准看的是"当时的数值 → 人的判断"这一对，缺了数值就没法回归。
+3. **台账是独立的新文件**：`persona/<id>/memory/warmth-log.jsonl`，与星图 sidecar 同一纪律，删掉即清空。
+
+## 验证
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+# Ran 136 tests ... OK (skipped=1)      ← 上一步 125 项
+
+.venv\Scripts\python.exe -m app.warmth --review
+# 近 3 天没有记录（她还没醒过，或者一直没逼近门槛）
+
+# 人工标注（示例，尚未执行——那是你的判断，我不代劳）
+.venv\Scripts\python.exe -m app.warmth --mark "他刚说很难过的事，她该开口" --label should_speak
+.venv\Scripts\python.exe -m app.warmth --review --days 7
+```
+
+**没有替你写标注**：标注是校准的输入，掺进我编的样本比没有样本更糟。现在台账文件还没被创建——因为真实的
+`connection` 只有 0.0004，还没逼近过门槛，这正是"不该记"的正确答案。
+
+**记忆文件守卫**：`persona/miracii` 下 36 个受保护文件（排除 warmth 三份与星图 sidecar）保持不变。
+
+## 风险与未决
+
+- **标注还没开始攒**：这是 P1 唯一没完成的交付，而且**只能等真实使用**——需要她跑几天、人在关键处标十几条。
+- **校准本身没做**：拿到 10–20 条后，才能回答"阈值该往上还是往下、犹豫的权重对不对"。
+- `user_state` 与 `immersion` 仍**没有数据源**：字段、调制、测试都在，但还没有谁去填（候选：轻量模型从最近对话推断 user_state；监督输出的 `tasks` 驱动 immersion）。
+- `tone-grid`（9 簇 × 5 档）未做，现在是简化版 `style_guidance`。
+- `saga` / `circadian` 两个钩子未做（P2 情感缝合线的接口）。
+
+## 复核
+
+（留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
