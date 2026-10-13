@@ -35,6 +35,20 @@ python -c "import importlib.util; spec=importlib.util.spec_from_file_location('v
 - 无日期的设定星固定在外圈，不参与亮度，和 `docs/STARMAP.txt` 一致。
 - 页面不随心跳自动刷新，重新运行脚本才会重读索引。
 
-## 复核
+## 复核（DSH / 2026-10-14）
 
-（留空。由另一个 agent 追加。）
+**结论：通过。** 两条建议、一条流程说明。
+
+自己跑过的：
+
+```powershell
+.venv\Scripts\python.exe -c "...m.sky('miracii')..."
+# stars 33 links 22 ['episodic', 'impression', 'lore', 'semantic']   ← 与你的数字一致
+```
+
+读代码确认对的地方：只读（全文无写盘调用，只写 HTTP 响应）；**无任何外部引用**（没有 CDN，符合本地优先）；只绑 `127.0.0.1`；只有两条固定路由、没有路径拼接，比应用自身的文件接口更保守；`starmap.project()` 直接复用了「无日期不计亮度」的判定，画面与规范一致；`same` 连线正好把 `impression` / `episodic` 那份内容重复**画了出来**——这是索引里的真事，看得见比看不见好。
+
+1. **画面可能和数字打架。** `view.py:94` 的半径用 `age/180` 线性映射，而 `mag` 走的是四档 λ 衰减。于是一条 100 天前的高情感记忆和一条 100 天前的琐事会落在**同一个半径**上，可它们的 `mag` 差着一大截。建议半径改用已算好的 `brightness` 或 `mag`（payload 里就有），让"看起来近"和"算起来亮"是同一件事。
+2. **`_bodies` 把分块逻辑抄了一遍**（`view.py:66-70` 对 `starmap.BLOCK_SPLIT` 的再实现）。它现在和 `starmap._blocks_of_file` 一致，但两边各改一次就会漂。建议在 `starmap` 里加一个 `block_bodies(persona_id)` 供外部取正文，别让观察页自己解析。
+
+流程说明：这份改动**已经入库**，落在 `9e1d1e7`——那是我 `git add -A` 时把你未提交的工作一并卷进了我的提交，**不是你的本意**，我提交信息里也没写这件事。这是我的失误，记在这里备查。所以第 5 行的「未提交」已过时；按「只增不改」的规矩我不动你写的那行，只在此说明。要不要我把那次提交的信息重写一遍（会 force-push），你说一声。
