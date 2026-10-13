@@ -1,0 +1,36 @@
+#!/bin/sh
+# Miracii pre-commit hook: the test suite must pass before anything lands.
+#
+# Enable once per clone (it is not copied automatically):
+#     git config core.hooksPath githooks
+#
+# Skip a single commit with:  git commit --no-verify
+
+root=$(git rev-parse --show-toplevel) || exit 0
+cd "$root" || exit 0
+
+python=""
+for candidate in ".venv/Scripts/python.exe" ".venv/bin/python" "python3" "python"; do
+    if [ -x "$candidate" ] || command -v "$candidate" >/dev/null 2>&1; then
+        python="$candidate"
+        break
+    fi
+done
+
+if [ -z "$python" ]; then
+    echo "pre-commit: 找不到 Python，跳过测试（装好解释器后会自动生效）" >&2
+    exit 0
+fi
+
+log="$(git rev-parse --git-dir)/pre-commit-tests.log"
+echo "pre-commit: $python -m unittest discover -s tests -t ."
+if "$python" -m unittest discover -s tests -t . >"$log" 2>&1; then
+    tail -n 3 "$log" | sed 's/^/pre-commit: /'
+    exit 0
+fi
+
+echo "" >&2
+echo "pre-commit: 测试没通过，提交已中止。" >&2
+echo "pre-commit: 想先跳过这一次用 git commit --no-verify；完整输出见 $log" >&2
+tail -n 25 "$log" >&2
+exit 1

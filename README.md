@@ -164,6 +164,17 @@ APIkeys.txt           不入库。一行 provider=alias=secret
 
 依赖：`pip install -r requirements.txt`。Android 包见 `packaging/android/README.md`。
 
+运行时用**项目 venv**：`Miracii.bat` 优先调 `.venv\Scripts\pythonw.exe`，找不到才回退 PATH 上的
+`pythonw`。所以 `pip install -r requirements.txt` 要装进 `.venv`，不要装到系统 Python——两套解释器
+并存时「装了依赖却开不出窗口」就是这么来的。
+
+测试：`python -m unittest discover -s tests -t .`。仓库自带的 `githooks/pre-commit` 会在每次提交前
+跑同一套测试（不通过就中止本次提交；单次跳过用 `git commit --no-verify`）。每个克隆启用一次：
+
+```powershell
+git config core.hooksPath githooks
+```
+
 ## 版本
 
 **0.0.1（测试）**。协议、文件格式、封装方式都会变。
