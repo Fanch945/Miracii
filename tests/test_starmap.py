@@ -103,20 +103,32 @@ class DecayTests(unittest.TestCase):
         self.assertAlmostEqual(starmap.recall_bonus(41), 0.3, places=2)
 
     def test_a_fresh_high_emotion_star_is_full_brightness(self):
-        star = {"ew": 0.8, "rc": 0, "last": TODAY.isoformat()}
+        star = {"ew": 0.8, "rc": 0, "created": TODAY.isoformat()}
         self.assertAlmostEqual(starmap.brightness(star, TODAY), 1.0, places=6)
 
     def test_high_emotion_decays_slower_than_trivia(self):
         old = (TODAY - timedelta(days=60)).isoformat()
-        treasured = starmap.brightness({"ew": 0.8, "rc": 0, "last": old}, TODAY)
-        trivia = starmap.brightness({"ew": 0.2, "rc": 0, "last": old}, TODAY)
+        treasured = starmap.brightness({"ew": 0.8, "rc": 0, "created": old}, TODAY)
+        trivia = starmap.brightness({"ew": 0.2, "rc": 0, "created": old}, TODAY)
         self.assertGreater(treasured, trivia)
 
     def test_recall_adds_brightness(self):
         old = (TODAY - timedelta(days=30)).isoformat()
-        cold = starmap.brightness({"ew": 0.4, "rc": 0, "last": old}, TODAY)
-        warm = starmap.brightness({"ew": 0.4, "rc": 20, "last": old}, TODAY)
+        cold = starmap.brightness({"ew": 0.4, "rc": 0, "created": old}, TODAY)
+        warm = starmap.brightness({"ew": 0.4, "rc": 20, "created": old}, TODAY)
         self.assertGreater(warm, cold)
+
+    def test_rehearsal_does_not_reset_ageing(self):
+        """Ageing counts from `created`: a line read today is still an old line."""
+        old = (TODAY - timedelta(days=90)).isoformat()
+        plain = {"ew": 0.4, "rc": 0, "created": old}
+        rehearsed = {"ew": 0.4, "rc": 0, "created": old, "last": TODAY.isoformat()}
+        self.assertAlmostEqual(starmap.decay_factor(plain, TODAY), starmap.decay_factor(rehearsed, TODAY))
+
+    def test_novelty_penalty_is_bounded(self):
+        self.assertEqual(starmap.novelty_factor(0), 1.0)
+        self.assertLess(starmap.novelty_factor(20), 1.0)
+        self.assertEqual(starmap.novelty_factor(10 ** 6), starmap.NOVELTY_FLOOR)
 
     def test_magnitude_runs_backwards(self):
         self.assertEqual(starmap.magnitude(1.0), 1.0)

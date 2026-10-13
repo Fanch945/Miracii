@@ -27,6 +27,8 @@ DATE_IN_NAME = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 # Six-band anchor for emotional weight: 0.0 plain fact ... 1.0 extreme impact.
 EW_FALLBACK = 0.3
+NOVELTY_K = 0.5
+NOVELTY_FLOOR = 0.3
 STRONG = ("崩溃", "哭", "吵", "害怕", "恐惧", "愤怒", "生气", "伤心", "绝望", "告别", "分离", "道歉")
 CLEAR = ("开心", "高兴", "兴奋", "紧张", "担心", "委屈", "心疼", "感动", "失望", "惊喜", "烦躁", "心虚", "抱歉")
 MILD = ("困", "累", "亲近", "轻松", "温柔", "拌嘴", "认真", "放松", "安静", "惦记")
@@ -89,7 +91,7 @@ def recall_bonus(read_count: int) -> float:
     return min(0.3, math.log(1 + max(0, int(read_count or 0))) * 0.08)
 
 
-def _as_date(value) -> date:
+def as_date(value) -> date:
     if isinstance(value, date):
         return value
     text = str(value or "").strip()[:10]
@@ -99,12 +101,29 @@ def _as_date(value) -> date:
         return date.today()
 
 
-def brightness(star: dict, today: date | None = None) -> float:
-    """How bright this memory looks now. Rewards recall — used for feel, not for ranking."""
+def decay_factor(star: dict, today: date | None = None) -> float:
+    """Ageing is intrinsic: it counts from `created`, not from the last time it was read.
+
+    Otherwise a line that keeps being injected would reset its own clock and never fade.
+    """
     now = today or date.today()
-    days = max(0, (now - _as_date(star.get("last") or star.get("created"))).days)
-    ew = float(star.get("ew", EW_FALLBACK))
-    return min(1.0, math.exp(-decay_lambda(ew) * days) + recall_bonus(star.get("rc", 0)))
+    days = max(0, (now - as_date(star.get("created"))).days)
+    return math.exp(-decay_lambda(float(star.get("ew", EW_FALLBACK))) * days)
+
+
+def novelty_factor(read_count: int) -> float:
+    """Ranking penalty: something that keeps coming up should yield to fresher matches.
+
+    Never drops below `NOVELTY_FLOOR`, so a strong keyword match still wins on relevance
+    however often it has been read.
+    """
+    penalty = 1.0 / (1.0 + math.log(1 + max(0, int(read_count or 0))) * NOVELTY_K)
+    return max(NOVELTY_FLOOR, penalty)
+
+
+def brightness(star: dict, today: date | None = None) -> float:
+    """How bright this memory looks now. Rehearsal brightens it — used for feel, not ranking."""
+    return min(1.0, decay_factor(star, today) + recall_bonus(star.get("rc", 0)))
 
 
 def magnitude(value: float) -> float:
@@ -224,6 +243,15 @@ def load(persona_id: str | None = None) -> dict[tuple[str, int], dict]:
     return latest
 
 
+def lookup(persona_id: str | None = None) -> dict[str, dict]:
+    """Active stars keyed by block fingerprint — the join key for retrieval."""
+    out: dict[str, dict] = {}
+    for star in load(persona_id).values():
+        if star.get("state") == "active" and star.get("fp"):
+            out.setdefault(str(star["fp"]), star)
+    return out
+
+
 def sync(persona_id: str | None = None, *, today: date | None = None) -> dict:
     """Reconcile the sidecar with the memory tree. Never writes to a memory file.
 
@@ -273,6 +301,20 @@ def bump(persona_id: str | None, file: str, block: int, *, today: date | None = 
         return False
     _append_rows(persona_id, [{**old, "rc": int(old.get("rc") or 0) + 1, "last": stamp}])
     return True
+
+
+def bump_many(persona_id: str | None, fingerprints: list[str], *, today: date | None = None) -> int:
+    """Record several retrieval hits in one append — one file open per turn, not one per star."""
+    stamp = (today or date.today()).isoformat()
+    by_fp = lookup(persona_id)
+    rows: list[dict] = []
+    for fp in dict.fromkeys(fingerprints):
+        star = by_fp.get(str(fp))
+        if star is None:
+            continue
+        rows.append({**star, "rc": int(star.get("rc") or 0) + 1, "last": stamp})
+    _append_rows(persona_id, rows)
+    return len(rows)
 
 
 def project(persona_id: str | None = None, *, today: date | None = None) -> list[dict]:
