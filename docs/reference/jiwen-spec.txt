@@ -1,0 +1,745 @@
+# 积温 jiwen 引擎 — 可执行规格（逐行转述，供 Python 重写）
+
+## 0. 元信息与证据
+
+- 源文件：`D:\SeelAI\ClaraShafiq\jiwen\jiwen.js`，**871 行**，纯 JS、零依赖、无 `require`，`module.exports = { createJiwen }`（jiwen.js:871）。
+- 附带文件：`tone-grid.js`（243 行，`module.exports = { createToneGrid, DEFAULT_PROFILES, DEFAULT_URGENCY }`，tone-grid.js:243）、`jiwen.test.js`（791 行）、`simulate.js`（241 行）、`package.json`（name `@clarashafiq/jiwen`，version `0.4.0`，main `jiwen.js`）。
+- SHA256（2026-10-13 读取时）：
+  - `jiwen.js` = `b26ea92d01660bdf394a9e27d7cfc933e92cfbece962ad035b9e0a58ce1b8074`
+  - `tone-grid.js` = `2fae7dabb9299b85c4808c58b2fc0c7d03fc0d9622ac2adc45e8447671c7fbee`
+  - `jiwen.test.js` = `c0d5f0a06a1628b198a6812fe9db841c3ec97e2464e284585cf9978f18922218`
+  - `simulate.js` = `d53abd49249f313c8d615edda4ab0b17eeca41e4f53123e30803f790890d1595`
+- git HEAD = `1c15a1f697816cd75e769f1df06278322293034a`（2026-09-15 21:03:06 +0800，提交信息「feat: 决策轨迹 —— tick 能说清「为什么没开口」」），`git status --short` 为空（工作区 clean）。
+- 实跑验证：`node jiwen.test.js` → **通过 34 / 失败 0**（node v24.21.0）。
+- 行号约定：本文中 `（N）` 或 `（jiwen.js:N）` 均指同目录源文件的物理行号；`（tone-grid.js:N）`、`（test:N）` 分别指语调网格与测试文件。
+
+---
+
+## 1. 配置面：`createJiwen(opts)`（jiwen.js:26）
+
+- `if (!opts) throw new Error('积温: opts is required')`（27）——全文件唯一的显式抛错。
+- 合并方式：`rates`/`thresholds`/`persona` 用 `Object.assign({默认}, opts.x)`（110 / 120 / 134）——**浅合并**，逐键覆盖；`axes`/`immersionMap` 是 `opts.x || {默认}`（30 / 122）——**整体替换，不做键级合并**。
+
+### 1.1 顶层 opts 字段（全量，来自源码实际读取点）
+
+| 字段 | 类型 | 默认 | 说明 | 行号 |
+|---|---|---|---|---|
+| `axes` | `{轴名:[min,max]}` | 见 1.2 | 整体替换 | 30-36 |
+| `rates` | Object | 见 1.3 | 浅合并 | 39-110 |
+| `thresholds` | Object | 见 1.4 | 浅合并 | 113-120 |
+| `immersionMap` | `{活动类型:沉浸度}` | 见 1.5 | 整体替换 | 122-128 |
+| `persona` | `{subjectName,selfName,subjectPronoun}` | 见 1.6 | 浅合并 | 130-134 |
+| `verbose` | boolean | `false`（严格 `=== true`） | 每次 tick 都打日志 | 137 |
+| `onLog` | `(msg)=>void` | `null`（非函数即 null） | 日志回调 | 138 |
+| `onLoad` | `async ()=>state\|null` | 无 | 加载 | 178 |
+| `onSave` | `async (state)=>void` | 无 → `save()` 直接 return | 持久化 | 189-195 |
+| `getSagaBias` | `async ()=>{connection,pride,valence,arousal,immersion}` | 无 | 每分钟偏置（长期叙事弧） | 215-221 |
+| `getCircadianBias` | `async ()=>{arousal,arousalRegressMult}` | 无 | 昼夜偏置 | 226-232 |
+| `getLastMessage` | `()=>{id,content,timestamp}\|null` | 无 → `lastMsg = null` | 消息源，**同步调用** | 235 |
+| `connectionRateFn` | `(lastMsg)=>number` | 无 → 常量 `0.0007` | 每分钟基础增长速率 | 236-238 |
+| `getPromptContext` | `(state)=>string` | 无 → `defaultPromptContext` | 覆盖状态描述 | 651 |
+| `getStyleGuidance` | `(state)=>string` | 无 → `defaultStyleGuidance` | 覆盖风格指引 | 658 |
+| `initialState` | — | — | **仅出现在 JSDoc（14），实现从未读取** | 14 |
+
+未在 JSDoc 中但被实现读取的：`verbose`(137)、`onLog`(138)、`getSagaBias`(215)、`getCircadianBias`(226)、`getPromptContext`(651)、`getStyleGuidance`(658)。
+
+### 1.2 `axes` 默认（30-36）
+
+```
+connection: [-0, 1]   // 注意字面量 -0（31）
+pride:      [-1, 1]   // 32
+valence:    [-1, 1]   // 33，注释「愉悦度：好受 ↔ 难受」
+arousal:    [-1, 1]   // 34，注释「唤醒度：平静 ↔ 焦躁/兴奋」
+immersion:  [ 0, 1]   // 35
+```
+
+### 1.3 `rates` 全部键、默认值、单位与行号（39-110）
+
+单位统一：**每分钟**（除 `accelDelay` 为分钟、`valenceDiminishWindow` 为分钟）。
+
+| 键 | 默认值 | 含义 | 行号 |
+|---|---|---|---|
+| `connectionGrowth` | `null` | 注释「由 connectionRateFn 动态决定」；**全文件无读取点** | 40 |
+| `connectionOnReply` | `0.20` | **[已弃用]** 对方回复时 connection 降幅；**全文件无读取点**（276 行注释说明扣除已移除） | 41 |
+| `immersionDecay` | `0.010` | 沉浸度衰减速率 | 42 |
+| `prideRegress` | `0.003` | 未触发防御时 pride 回归速率 | 43 |
+| `accelDelay` | `0` | 加速前的线性缓冲（分钟），0=立即加速 | 47 |
+| `connectionAccel` | `0` | 非线性加速指数，0=纯线性 | 48 |
+| `valenceRegress` | `0.005` | valence 回归设定点速率 | 51 |
+| `valenceSetpoint` | `0` | valence 回归目标（0=中性） | 52 |
+| `valenceLockThreshold` | `1.0` | connection ≥ 此值触发情绪锁定（1.0=永不） | 55 |
+| `valenceLockFactor` | `1.0` | 锁定时回归速率乘数（0.15=减慢85%） | 56 |
+| `valenceConnectBoost` | `0` | valence 轻度低时 connection 增长倍率（如 1.4=+40%） | 60 |
+| `valenceConnectBoostThreshold` | `-0.2` | valence 低于此值触发 boost | 61 |
+| `valenceConnectDampen` | `0` | 严重低落时增长倍率（如 0.4=-60%） | 62 |
+| `valenceConnectDampenThreshold` | `-0.4` | valence 低于此值触发 dampen | 63 |
+| `arousalSetpoint` | `0` | arousal 自然漂移目标 | 66 |
+| `arousalRegress` | `0.005` | 向设定点回归速率 | 67 |
+| `arousalConnectionRiseThreshold` | `1.0` | connection ≥ 此值 arousal 上升（1.0=永不） | 68 |
+| `arousalConnectionRiseRate` | `0.002` | connection 高时 arousal 上升速率 | 69 |
+| `arousalLockThreshold` | `1.0` | valence ≥ 此值触发 arousal 锁定（1.0=永不） | 72 |
+| `arousalLockFactor` | `1.0` | 锁定时回归速率乘数 | 73 |
+| `prideDefendThreshold` | `1.0` | connection ≥ 此值触发骄傲防御（1.0=永不） | 76 |
+| `prideDefendTarget` | `0.5` | 防御时 pride 漂移目标 | 77 |
+| `prideDefendRate` | `0.003` | 防御漂移速率 | 78 |
+| `prideArousalConflictRate` | `0` | connection≥considerContact 且 pride≥prideBlock 时额外 arousal 升温 | 81 |
+| `prideErosionRate` | `0` | connection≥forceContact 且 pride>0 时额外侵蚀 pride | 84 |
+| `activityConnectionRelief` | `0` | `setActivity` 时 connection 降幅 | 87 |
+| `immersionDampenConnection` | `1.0` | 0=关闭，1=线性阻尼 `(1-immersion)` | 90 |
+| `valenceDeltaScaling` | `false` | valence delta 状态相关缩放 | 95 |
+| `arousalDeltaScaling` | `false` | arousal delta 状态相关缩放 | 99 |
+| `valenceConnectionDriftThreshold` | `0.0` | connection 超过此才启动 valence 下沉（0=永不） | 103 |
+| `valenceConnectionDriftRate` | `0` | 下沉速率 | 104 |
+| `valenceDiminishWindow` | `0` | 边际递减统计窗口（分钟），0=不启用 | 108 |
+| `valenceDiminishFactor` | `0` | 递减强度（2.0 表示累积 0.5 时 scale=0.5） | 109 |
+
+### 1.4 `thresholds` 默认（113-120）
+
+| 键 | 默认 | 行号 |
+|---|---|---|
+| `observation` | `0.20` | 114 |
+| `considerContact` | `0.35` | 115 |
+| `forceContact` | `0.50` | 116 |
+| `prideBlock` | `0.50` | 117 |
+| `valenceActivity` | `-1.0`（-1.0=永不） | 118 |
+| `arousalAgitation` | `0.7` | 119 |
+
+### 1.5 `immersionMap` 默认（122-128）
+
+`reading: 0.6`（123）、`search: 0.4`（124）、`browse_snitch: 0.35`（125）、`browse: 0.35`（126）、`observe: 0.15`（127）。
+
+### 1.6 `persona` 默认（130-134）
+
+`subjectName: '对方'`（131）、`selfName: '你'`（132）、`subjectPronoun: 'ta'`（133）。
+
+### 1.7 日志与调试（137-147）
+
+- `const verbose = opts.verbose === true`（137）；`const onLog = typeof opts.onLog === 'function' ? opts.onLog : null`（138）。
+- `log(msg)`（140-147）：先 `if (onLog) try{ onLog(msg) }catch(_){}`（141-143，吞异常，注释「用户回调不应阻断 tick」）；再 `if (!onLog || verbose) console.log(msg)`（144-146）——**没给 onLog 时永远 console.log；给了 onLog 且 verbose 时两边都打**。
+
+---
+
+## 2. 五轴状态
+
+### 2.1 轴定义、范围、初值
+
+| 轴 | 范围（默认 axes） | 初始值 | 行号 |
+|---|---|---|---|
+| `connection` 连接需求 | `[-0, 1]` | `axes.connection[0]` = `-0` | 31 / 151 |
+| `pride` 骄傲 | `[-1, 1]` | `axes.pride[0]` = `-1`!! | 32 / 152 |
+| `valence` 愉悦度 | `[-1, 1]` | `axes.valence[0]` = `-1`!! | 33 / 153 |
+| `arousal` 唤醒度 | `[-1, 1]` | `axes.arousal[0]` = `-1`!! | 34 / 154 |
+| `immersion` 沉浸度 | `[0, 1]` | `axes.immersion[0]` = `0` | 35 / 155 |
+
+**关键事实**：`DEFAULT_STATE` 把每个轴的初值取成该轴的**下界**（151-155），所以默认冷启动状态是 `{connection:-0, pride:-1, valence:-1, arousal:-1, immersion:0}`，而不是文档常说的「全 0」。
+- 实际部署/测试都用 `onLoad` 注入中性快照覆盖它（test:53-57、:62-70；simulate.js:7-11）——`jiwen.test.js` 的注释明确写「jiwen 不直接支持 initialState 选项，需通过 onLoad 返回初始快照来注入」（test:51-52），`CLAUDE.md:58` 同述。
+- `opts.initialState` 在源码中**未找到读取处**（仅 JSDoc:14）。
+
+### 2.2 `DEFAULT_STATE` 其余字段（156-162）
+
+```
+lastActivity: null        // 156，形状 { type, label, at }
+lastTick: null            // 157，ISO 字符串
+lastChatAnalysis: null    // 158，ISO 字符串
+lastChatMessageId: null   // 159
+lastBotMessageId: null    // 160，注释：上次Bot回复的消息ID，用于将同批次用户消息归组
+userStatus: 'active'      // 161，'active' | 'busy' | 'away' | 'sleeping'
+```
+
+实例内部另有：`let state = { ...DEFAULT_STATE }`（164）、`let _loaded = false`（165）、`let lastTriggerTrace = []`（168）、`const _valenceDeltaLog = []`（172，形状 `[{time: ms, value: number}]`，**不持久化**）。
+
+### 2.3 加载 / 保存 / 惰性加载
+
+- `load()`（175-186）：`if (_loaded) return`（176）；`const saved = opts.onLoad ? await opts.onLoad() : null`（178）；`if (saved) state = { ...DEFAULT_STATE, ...saved }`（180，**浅合并，缺失键回落到 DEFAULT_STATE**）；catch → `console.warn('[积温] load failed, using defaults:', e.message)`（183）；`_loaded = true`（185）。
+- `save()`（188-195）：`if (!opts.onSave) return`（189）；`await opts.onSave({ ...state })`（191，浅拷贝）；catch → `console.error('[积温] save failed:', e.message)`（193）。
+- `ensureLoaded()`（197-200）：`if (!_loaded) await load(); return state`。
+- 除 `getPromptContext`/`getStyleGuidance`/`getTriggerTrace`/`explainTrigger`/`getUserStatus`/`getStateSummary` 外，所有公开方法都以 `await ensureLoaded()` 开头。
+
+---
+
+## 3. `tick(minutesElapsed)` 完整流程（203-426）
+
+按**源码执行顺序**编号（括号内为行号）：
+
+1. `await ensureLoaded()`（204）。
+2. `const now = new Date().toISOString()`（205）。
+3. **入参校验**：`if (!minutesElapsed || minutesElapsed <= 0) return []`（207）—— `0`/负值/`NaN`/`null`/`undefined` 一律直接返回空数组，**且在 `checkThresholds()` 之前返回，因此 `lastTriggerTrace` 不被更新**。
+4. `const mins = Math.min(minutesElapsed, 60)`（209）—— **单次上限 60 分钟**，无下限夹紧（非正数已在第 3 步拦掉）。
+5. `stateBefore` 快照（210，仅用于日志的 5 个轴值）。
+6. **Saga 偏置**：`if (opts.getSagaBias)` → `sagaBias = await opts.getSagaBias()`（215-217）；`try/catch` 空体，失败静默回退（218-220）。注释（213）声明回调返回 `{connection, pride, valence, arousal, immersion}` 每分钟偏置。
+7. **昼夜偏置**：`if (opts.getCircadianBias)` → `circadianBias = await opts.getCircadianBias()`（226-228）；同样 try/catch 静默（229-231）。注释（224）声明返回 `{ arousal: 设定点偏置, arousalRegressMult: 回归速率乘数 }`。
+8. **消息源**：`const lastMsg = opts.getLastMessage ? opts.getLastMessage() : null`（235，同步调用，不 await）。
+9. **基础速率**：`const baseRate = opts.connectionRateFn ? opts.connectionRateFn(lastMsg) : 0.0007`（236-238）。
+10. **距上次消息分钟数**：`let minutesSinceLastMsg = Infinity`（241）；`if (lastMsg && lastMsg.timestamp) minutesSinceLastMsg = (Date.now() - new Date(lastMsg.timestamp).getTime()) / 60000`（242-244）。
+11. **时间分段加速**（247-251）：
+    - `const accelDelay = rates.accelDelay || 0`（247）
+    - `const useAccel = rates.connectionAccel > 0 && minutesSinceLastMsg >= accelDelay`（248）
+    - `const accelFactor = useAccel ? Math.pow(1 + state.connection, rates.connectionAccel) : 1`（249-251）
+    - 即：**`accelDelay` 之前（或 `connectionAccel<=0`）`accelFactor = 1`（纯线性）；达到 `accelDelay` 分钟后 `accelFactor = (1 + connection) ** connectionAccel`**。这里的 `state.connection` 是**本 tick 更新前**的值（因为连接更新在第 15 步）。无历史消息时 `minutesSinceLastMsg = Infinity`，`accelDelay` 默认为 0 → 立即加速。
+12. **valence → connection 增长率耦合**（254-259）：
+    ```
+    let valenceMultiplier = 1;
+    if (rates.valenceConnectDampen > 0 && state.valence < rates.valenceConnectDampenThreshold) {
+      valenceMultiplier = rates.valenceConnectDampen;
+    } else if (rates.valenceConnectBoost > 0 && state.valence < rates.valenceConnectBoostThreshold) {
+      valenceMultiplier = rates.valenceConnectBoost;
+    }
+    ```
+    **dampen 分支优先**：两者同时满足（例如 valence=-0.5，dampen 线 -0.4、boost 线 -0.2）时取 dampen。
+13. **沉浸阻尼**（262-264）：`immersionFactor = rates.immersionDampenConnection > 0 ? 1 - state.immersion * rates.immersionDampenConnection : 1`。
+14. **有效速率**（266）：`const effectiveRate = baseRate * accelFactor * valenceMultiplier * Math.max(0, immersionFactor)`（`Math.max(0,…)` 是唯一对阻尼因子的防负值处理）。
+15. **connection 更新**（269-274）：
+    ```
+    const sagaConnectionBias = sagaBias?.connection || 0;              // 269
+    state.connection = clamp(
+      state.connection + (effectiveRate + sagaConnectionBias) * mins,  // 271
+      axes.connection[0], axes.connection[1]);                          // 272-273
+    ```
+    注意：saga 偏置是**每分钟加性**叠加在 `effectiveRate` 之后（不乘任何倍率）。276-277 注释：`connectionOnReply` 自动扣除已移除，降幅由外部 LLM 分析（如 `analyzeChatSegment`）经 `applyDelta` 注入。
+16. **immersion 衰减**（281-293）：
+    ```
+    const sagaImmersionBias = sagaBias?.immersion || 0;                                  // 281
+    if (state.lastActivity) {                                                            // 282
+      const sinceActivity = (Date.now() - new Date(state.lastActivity.at).getTime()) / 60000;  // 283
+      const effectiveImmersionDecay = Math.max(0, rates.immersionDecay - sagaImmersionBias);   // 284
+      state.immersion = Math.max(
+        axes.immersion[0],
+        state.immersion - effectiveImmersionDecay * Math.min(mins, sinceActivity));       // 285-288
+      if (state.immersion <= 0.01 && sinceActivity > 60) {                                // 289
+        state.lastActivity = null;                                                        // 290
+        state.immersion = axes.immersion[0];                                              // 291
+      }
+    }
+    ```
+    要点：**没有 `lastActivity` 就完全不衰减**；衰减量取 `min(mins, sinceActivity)`；只有下限夹紧，**无上限夹紧**；`immersion<=0.01 且 sinceActivity>60` 时清空活动并把 immersion 归到轴下界。
+17. **pride（防御性上升 / 回归）**（296-313）：
+    ```
+    const sagaPrideBias = sagaBias?.pride || 0;                                            // 296
+    if (state.connection >= rates.prideDefendThreshold) {                                   // 297
+      const effectiveDefendTarget = clamp(rates.prideDefendTarget + sagaPrideBias,
+                                          axes.pride[0], axes.pride[1]);                    // 299
+      if (state.pride < effectiveDefendTarget) {
+        state.pride = Math.min(effectiveDefendTarget, state.pride + rates.prideDefendRate * mins);  // 301
+      } else if (state.pride > effectiveDefendTarget) {
+        state.pride = Math.max(effectiveDefendTarget, state.pride - rates.prideDefendRate * mins);  // 303
+      }
+    } else {
+      const prideResting = clamp(sagaPrideBias, -0.3, 0.3);                                 // 307
+      if (state.pride > prideResting) {
+        state.pride = Math.max(prideResting, state.pride - rates.prideRegress * mins);      // 309
+      } else if (state.pride < prideResting) {
+        state.pride = Math.min(prideResting, state.pride + rates.prideRegress * mins);      // 311
+      }
+    }
+    ```
+    要点：防御分支的回归/上升目标是 `prideDefendTarget + saga偏置`（夹紧到轴范围），速率为 `prideDefendRate`（**双向**：高于目标也往回落）；非防御分支的静息点是 `clamp(sagaPrideBias, -0.3, 0.3)`（**硬编码 ±0.3**），速率为 `prideRegress`。两分支都不对 `state.pride` 做轴夹紧（只朝向已夹紧的目标移动）。
+18. **盔甲侵蚀**（316-320）：
+    ```
+    if (rates.prideErosionRate > 0 &&
+        state.connection >= thresholds.forceContact &&
+        state.pride > 0) {
+      state.pride = Math.max(0, state.pride - rates.prideErosionRate * mins);               // 319
+    }
+    ```
+    下限是**硬编码 0**（不是 `axes.pride[0]`）。
+19. **valence 回归**（323-335）：
+    ```
+    const valenceRegressRate = state.connection >= rates.valenceLockThreshold
+      ? rates.valenceRegress * rates.valenceLockFactor
+      : rates.valenceRegress;                                                                // 323-325
+    const sagaValenceBias = sagaBias?.valence || 0;                                          // 328
+    const effectiveValenceSetpoint = clamp(rates.valenceSetpoint + sagaValenceBias,
+                                           axes.valence[0], axes.valence[1]);                // 329
+    if (state.valence > effectiveValenceSetpoint) {
+      state.valence = Math.max(effectiveValenceSetpoint, state.valence - valenceRegressRate * mins);  // 332
+    } else if (state.valence < effectiveValenceSetpoint) {
+      state.valence = Math.min(effectiveValenceSetpoint, state.valence + valenceRegressRate * mins);  // 334
+    }
+    ```
+    锁定条件是 **connection ≥ valenceLockThreshold**（默认 1.0=永不触发），锁定时速率乘 `valenceLockFactor`。
+20. **connection 驱动的 valence 下沉（改2）**（339-343）：
+    ```
+    if (rates.valenceConnectionDriftRate > 0 &&
+        state.connection >= rates.valenceConnectionDriftThreshold) {                         // 339-340
+      const drift = rates.valenceConnectionDriftRate * mins * state.connection;              // 341
+      state.valence = clamp(state.valence - drift, axes.valence[0], axes.valence[1]);        // 342
+    }
+    ```
+21. **arousal（回归力 + 上升力竞争）**（346-387）：
+    ```
+    const sagaArousalBias = sagaBias?.arousal || 0;                                          // 346
+    const circadianArousalBias = circadianBias?.arousal || 0;                                // 347
+    const circadianRegressMult = circadianBias?.arousalRegressMult || 1.0;                   // 348
+    const arousalSetpoint = clamp((rates.arousalSetpoint || 0) + sagaArousalBias + circadianArousalBias,
+                                  axes.arousal[0], axes.arousal[1]);                          // 349
+    const baseArousalRegress = rates.arousalRegress * circadianRegressMult;                   // 352
+    const effectiveArousalRegress = state.valence >= rates.arousalLockThreshold
+      ? baseArousalRegress * rates.arousalLockFactor
+      : baseArousalRegress;                                                                   // 353-355
+    let arousalRegressForce = 0;                                                              // 358
+    if (state.arousal > arousalSetpoint) arousalRegressForce = -effectiveArousalRegress * mins;   // 359-360
+    else if (state.arousal < arousalSetpoint) arousalRegressForce = effectiveArousalRegress * mins; // 361-362
+    let arousalRiseForce = 0;                                                                 // 366
+    if (state.connection >= rates.arousalConnectionRiseThreshold) {
+      arousalRiseForce = rates.arousalConnectionRiseRate * mins;                              // 367-368
+    }
+    if (rates.prideArousalConflictRate > 0 &&
+        state.connection >= thresholds.considerContact &&
+        state.pride >= thresholds.prideBlock) {
+      arousalRiseForce += rates.prideArousalConflictRate * mins;                              // 372-375
+    }
+    const netArousal = state.arousal + arousalRegressForce + arousalRiseForce;                // 379
+    if (arousalRegressForce < 0 && netArousal < arousalSetpoint && arousalRiseForce === 0) {
+      state.arousal = arousalSetpoint;                                                        // 381-382
+    } else if (arousalRegressForce > 0 && netArousal > arousalSetpoint && arousalRiseForce === 0) {
+      state.arousal = arousalSetpoint;                                                        // 383-384
+    } else {
+      state.arousal = clamp(netArousal, axes.arousal[0], axes.arousal[1]);                    // 386
+    }
+    ```
+    要点：锁定条件是 **valence ≥ arousalLockThreshold**（与 valence 锁定的条件轴相反）；`arousalRiseForce === 0` 是严格相等判定（注释 380「回归力不会推过设定点（除非上升力在反方向拉）」）。
+22. `state.lastTick = now`（389）。
+23. `const triggers = checkThresholds()`（392）—— 顺带把 `lastTriggerTrace` 更新（见第 4 节）。
+24. **日志**（395-422）：`verbose` 时每次 tick 打印（396-405），并在 `triggers.length === 0` 时追加 `[积温] 未触发原因: ${explainTrigger()}`（407-409）；非 verbose 时仅在 `triggers.length > 0` 打印（410-421）。日志字段：`tick {mins}min | c/p/v/a/i 前后值 | 速率:{effectiveRate.toFixed(4)}/min | 触发: …`。
+25. `await save()`（424）。
+26. `return triggers`（425）—— 触发对象数组（第 4 节）。
+
+---
+
+## 4. 触发判定 `checkThresholds()`（429-533）
+
+返回值：`triggers` 数组；副作用：`lastTriggerTrace = trace`（531）。
+局部量（434-439）：`c/p/i/v/a` 分别是 connection/pride/immersion/valence/arousal 的当前值；`const r3 = (n) => Number(n.toFixed(3))`（439，仅用于 trace 的 detail）。
+
+闸门按源码顺序（每个 `if` 独立求值，**不是 else-if 链**，除了第 1 组内部的 else-if）：
+
+### 4.1 开口区 · observation（441-458）
+
+```
+if (c >= thresholds.observation && c < thresholds.considerContact) {          // 441
+  triggers.push({
+    action: 'observation',
+    urgency: (c - thresholds.observation) /
+             (thresholds.considerContact - thresholds.observation),           // 444-445
+  });
+  trace.push({ gate: '开口', fired: true, action: 'observation',
+    reason: 'connection 进了观察区',
+    detail: { connection: r3(c), 观察线: thresholds.observation, 考虑线: thresholds.considerContact } });  // 447-451
+} else if (c < thresholds.observation) {                                      // 452
+  trace.push({ gate: '开口', fired: false, reason: 'connection 还没到观察线',
+    detail: { connection: r3(c), 还差: r3(thresholds.observation - c) } });   // 453-457
+}
+```
+- 返回字段：**仅 `action` + `urgency`**（`urgency` 已归一化到 `[0,1)`，无夹紧但仍等价于比例）。
+- `c ≥ forceContact` 时本组**两条分支都不进**（452 的 else-if 只捕获 `c < observation`），因此该情况下的「开口」闸门记录只来自 4.3。
+- 消费方如需 `connection` 阈值信息，只能从 `detail` 取。
+
+### 4.2 考虑区 · contact / find_activity（460-491）
+
+```
+if (c >= thresholds.considerContact && c < thresholds.forceContact) {         // 460
+  if (p >= thresholds.prideBlock) {                                           // 461
+    if (i < 0.2) {                                                            // 462  ← 硬编码 0.2
+      triggers.push({ action: 'find_activity', reason: 'pride_block',
+                      urgency: c - 0.30 });                                   // 463-467  ← 硬编码 0.30
+      trace.push({ gate: '开口', fired: false, divertedTo: 'find_activity',
+        reason: 'pride 挡住开口，转身去找事做',
+        detail: { pride: r3(p), 嘴硬线: thresholds.prideBlock, immersion: r3(i) } });   // 468-472
+    } else {
+      trace.push({ gate: '开口', fired: false,
+        reason: 'pride 挡住开口，immersion 又缓冲住了（没转成找事做）',
+        detail: { pride: r3(p), 嘴硬线: thresholds.prideBlock, immersion: r3(i), immersion上限: 0.2 } }); // 474-478
+    }
+  } else {
+    triggers.push({ action: 'contact', urgency: c - 0.30 });                  // 481-484 ← 硬编码 0.30
+    trace.push({ gate: '开口', fired: true, action: 'contact',
+      reason: '过了 pride 闸门',
+      detail: { pride: r3(p), 嘴硬线: thresholds.prideBlock } });              // 485-489
+  }
+}
+```
+- `prideBlock` 闸门：`p >= thresholds.prideBlock` **直接吞掉开口**，不产生 `contact`。
+- `immersion` 缓冲：被 pride 挡住后，`i < 0.2` 才转成 `find_activity(reason:'pride_block')`；`i >= 0.2` 时**什么触发都不产生**，只留一条 `fired:false` 轨迹。
+- `urgency` 值用**硬编码 0.30**（不是 `thresholds.considerContact`）。
+
+### 4.3 强制区 · forced contact（493-504）
+
+```
+if (c >= thresholds.forceContact) {                                          // 493
+  triggers.push({ action: 'contact', urgency: Math.min(1, c - 0.40), forced: true });  // 494-498 ← 硬编码 0.40
+  trace.push({ gate: '开口', fired: true, action: 'contact', forced: true,
+    reason: '过了强制线，pride 挡不住了',
+    detail: { connection: r3(c), 强制线: thresholds.forceContact } });        // 499-503
+}
+```
+- **`forced: true` 只在这里出现**，且**完全无视 pride 与 immersion**。`urgency` 夹紧到 `[.., 1]`（无下限夹紧）。
+
+### 4.4 低情绪自我调节 · find_activity（507-529）
+
+```
+if (v <= thresholds.valenceActivity || a >= thresholds.arousalAgitation) {    // 507
+  const alreadyFinding = triggers.some(t => t.action === 'find_activity');    // 508
+  const lowValence = v <= thresholds.valenceActivity;                         // 509
+  if (!alreadyFinding && i < 0.3) {                                           // 510  ← 硬编码 0.3
+    const reason = lowValence ? 'low_valence' : 'high_arousal';               // 511
+    triggers.push({ action: 'find_activity', reason,
+                    urgency: Math.min(1, Math.abs(lowValence ? v : a) / 1) });// 512-516
+    trace.push({ gate: '自我调节', fired: true, action: 'find_activity',
+      reason: lowValence ? 'valence 过低' : 'arousal 过高',
+      detail: { valence: r3(v), arousal: r3(a) } });                          // 517-521
+  } else if (!alreadyFinding) {
+    trace.push({ gate: '自我调节', fired: false,
+      reason: 'immersion 太高，没转去找事做',
+      detail: { immersion: r3(i), immersion上限: 0.3 } });                     // 523-527
+  }
+}
+```
+- 触发条件：`valence <= valenceActivity` **或** `arousal >= arousalAgitation`。
+- 去重：若前面（4.2 的 `pride_block`）已产生 `find_activity`，则**本组不再产生触发、也不写轨迹**（`alreadyFinding` 为真时两个分支都不进）。
+- `immersion` 缓冲线硬编码 `0.3`；`reason` 在两条件同时成立时取 `'low_valence'`（509/511）。`urgency = min(1, |值| / 1)`（除 1 是恒等，无实际作用）。
+
+### 4.5 触发总数与组合（推论自上述结构）
+
+- 开口类（observation | contact | find_activity(pride_block) 或「什么也不发生」）三选一（区间互斥）。
+- 自我调节类最多再补一个 `find_activity`。
+- 因此 `triggers.length ∈ {0, 1, 2}`；`trace.length ≤ 2`。
+- trace 的 `gate` 取值只有 `'开口'`（447/453/468/474/485/499）与 `'自我调节'`（517/523 共两处分支）。
+- **动作名与字段总表**：
+
+| action | 出现位置 | 携带字段 |
+|---|---|---|
+| `observation` | 441-446 | `action`, `urgency`（比例，无 `reason`、无 `forced`） |
+| `contact` | 480-484 | `action`, `urgency = c-0.30` |
+| `contact` | 493-498 | `action`, `urgency = min(1, c-0.40)`, **`forced: true`** |
+| `find_activity` | 462-467 | `action`, `reason: 'pride_block'`, `urgency = c-0.30` |
+| `find_activity` | 511-516 | `action`, `reason: 'low_valence' \| 'high_arousal'`, `urgency = min(1, |v 或 a|)` |
+
+### 4.6 `getTriggerTrace()`（538-540）
+
+返回 `lastTriggerTrace`（**同一数组引用，不拷贝**）。元素形状：
+`{ gate: '开口'|'自我调节', fired: boolean, action?: string, divertedTo?: 'find_activity', reason: string, detail: {…中文键…} }`。
+`detail` 的键按分支不同：`{connection, 观察线, 考虑线}`（450）、`{connection, 还差}`（456）、`{pride, 嘴硬线, immersion}`（471）、`{pride, 嘴硬线, immersion, immersion上限:0.2}`（477）、`{pride, 嘴硬线}`（488）、`{connection, 强制线}`（502）、`{valence, arousal}`（520）、`{immersion, immersion上限:0.3}`（526）。
+
+### 4.7 `explainTrigger()`（543-551）
+
+```
+if (lastTriggerTrace.length === 0) return '（还没 tick 过）';                 // 544
+const fired = lastTriggerTrace.filter(t => t.fired);                          // 545
+const blocked = lastTriggerTrace.filter(t => !t.fired);                       // 546
+if (fired.length > 0) {
+  return '已触发: ' + fired.map(t => t.action + '（' + t.reason + '）').join('、');  // 548
+}
+return '未触发: ' + blocked.map(t => t.reason).join('；');                     // 550
+```
+注意：fired 分支会拼 `t.reason`，而 `observation`/`contact` 的 trace 条目 reason 存在（447/485/499），故不会出现 `undefined`；但 `observation` 的 reason 为「connection 进了观察区」。
+
+---
+
+## 5. 对外 API 面（返回对象 719-747）
+
+返回对象键（顺序即源码顺序，719-747）：
+`load, save, tick, applyDelta, getState, getPromptContext, getStyleGuidance, resetConnection, setActivity, checkThresholds, getTriggerTrace, explainTrigger, setLastChatMessageId, getLastChatMessageId, setLastBotMessageId, getLastBotMessageId, setUserStatus, getUserStatus, getStateSummary, config`。
+
+| 方法 | 行号 | 入参 | 返回 | 用途 / 副作用 |
+|---|---|---|---|---|
+| `load()` | 175-186 | — | `Promise<void>` | 首次加载；幂等（`_loaded`） |
+| `save()` | 188-195 | — | `Promise<void>` | 调 `onSave({...state})`；失败仅 console.error |
+| `tick(minutesElapsed)` | 203-426 | number（分钟，>0，内部截断 60） | `Promise<Trigger[]>` | 推进漂移 + 触发判定 + `save()` |
+| `applyDelta(delta)` | 576-633 | `{pride?, valence?, arousal?, connection?, mood?}` | `Promise<void>` | 见 5.1 |
+| `getState()` | 636-639 | — | `Promise<state>`（**浅拷贝** `{...state}`） | 快照；`lastActivity` 是同一对象引用 |
+| `getPromptContext()` | 650-653 | — | `string` | `opts.getPromptContext(state)` 或 `defaultPromptContext(state, persona)`（751-806） |
+| `getStyleGuidance()` | 657-660 | — | `string` | `opts.getStyleGuidance(state)` 或 `defaultStyleGuidance(state, persona)`（809-864） |
+| `resetConnection()` | 642-646 | — | `Promise<void>` | `state.connection = axes.connection[0]`（默认 `-0`）+ save |
+| `setActivity(type, label)` | 554-573 | string, string | `Promise<void>` | 见 5.2 |
+| `checkThresholds()` | 429-533 | — | `Trigger[]`（同步） | **只判定不推进**；会覆写 `lastTriggerTrace` |
+| `getTriggerTrace()` | 538-540 | — | `Trace[]` | 上一次判定轨迹（引用直出） |
+| `explainTrigger()` | 543-551 | — | `string` | 轨迹的一句话版 |
+| `setLastChatMessageId(id)` | 663-668 | any | `Promise<void>` | 设 `lastChatMessageId`，同时把 `lastChatAnalysis` 设为 `new Date().toISOString()`，save |
+| `getLastChatMessageId()` | 670-673 | — | `Promise<any>` | — |
+| `setLastBotMessageId(id)` | 675-679 | any | `Promise<void>` | set + save |
+| `getLastBotMessageId()` | 681-684 | — | `Promise<any>` | — |
+| `setUserStatus(status)` | 686-690 | string | `Promise<void>` | set + save |
+| `getUserStatus()` | 692-694 | — | `string` | `state.userStatus || 'active'`（同步，不 ensureLoaded） |
+| `getStateSummary()` | 697-716 | — | `string` | 一行调试摘要，见 5.3（同步） |
+| `config` | 740-746 | — | `{axes, rates, thresholds, immersionMap, persona}` | 配置快照（**未冻结**，可被外部改写） |
+
+### 5.1 `applyDelta(delta)`（576-633）逐步
+
+1. `await ensureLoaded()`（577）；`const scaled = { ...delta }`（579，浅拷贝，不修改调用方对象）。
+2. **改3 边际递减**（582-600），条件 `scaled.valence !== undefined && rates.valenceDiminishWindow > 0 && rates.valenceDiminishFactor > 0`：
+   - `windowMs = rates.valenceDiminishWindow * 60 * 1000`（585）
+   - 倒序清理 `_valenceDeltaLog` 中 `now - time > windowMs` 的项（587-589）
+   - `sameSign = _valenceDeltaLog.filter(d => (scaled.valence > 0 && d.value > 0) || (scaled.valence < 0 && d.value < 0))`（591-593）
+   - `cumSum = sameSign.reduce((s, d) => s + Math.abs(d.value), 0)`（594）
+   - `if (cumSum > 0) { const scale = 1 / (1 + cumSum * rates.valenceDiminishFactor); scaled.valence *= scale; }`（595-598）
+   - `_valenceDeltaLog.push({ time: now, value: delta.valence })`（599）——**记原始值**（注意用 `delta.valence` 而非 `scaled.valence`）。
+3. **改1 valence 状态相关缩放**（603-611），条件 `scaled.valence !== undefined && rates.valenceDeltaScaling`：
+   - `if (scaled.valence > 0 && state.valence > 0.3) { const dampen = (state.valence - 0.3) / 0.7 * 0.5; scaled.valence *= (1 - dampen); }`（604-606，注释 0.3→0%, 1.0→50%）
+   - `else if (scaled.valence < 0 && state.valence < -0.3) { const dampen = (-state.valence - 0.3) / 0.7 * 0.5; scaled.valence *= (1 - dampen); }`（607-610）
+4. **arousal 缩放**（615-618），条件 `scaled.arousal > 0 && state.arousal > 0.4 && rates.arousalDeltaScaling`：
+   `const dampen = (state.arousal - 0.4) / 0.6 * 0.5; scaled.arousal *= (1 - dampen);`（0.4→0%, 1.0→50%）
+5. **逐轴写入（顺序固定）**，每个都夹紧到对应轴范围：
+   - `if (scaled.pride !== undefined) state.pride = clamp(state.pride + scaled.pride, axes.pride[0], axes.pride[1])`（620-621）
+   - `if (scaled.valence !== undefined) state.valence = clamp(state.valence + scaled.valence, axes.valence[0], axes.valence[1])`（622-623）
+   - `if (scaled.arousal !== undefined) state.arousal = clamp(state.arousal + scaled.arousal, axes.arousal[0], axes.arousal[1])`（624-625）
+   - `if (scaled.connection !== undefined) state.connection = clamp(state.connection + scaled.connection, axes.connection[0], axes.connection[1])`（626-627）
+   - **向后兼容 `mood`**：`if (scaled.mood !== undefined) state.valence = clamp(state.valence + scaled.mood, axes.valence[0], axes.valence[1])`（629-631）——在 valence 之后**再叠加一次**。
+6. `await save()`（632）。
+7. **`applyDelta` 不校验数值量级、不校验类型**：没有任何 `isNaN` / `Number.isFinite` / 幅度上限；唯一的「夹紧」是写入时的轴范围 clamp。
+
+### 5.2 `setActivity(type, label)`（554-573）
+
+```
+await ensureLoaded();                                                    // 555
+const sameType = state.lastActivity && state.lastActivity.type === type; // 559
+state.lastActivity = { type, label, at: new Date().toISOString() };      // 561
+state.immersion = immersionMap[type] || 0.2;                             // 562  ← 未配置类型回落 0.2；值为 0 也会回落
+if (rates.activityConnectionRelief > 0 && !sameType) {                   // 565
+  state.connection = Math.max(0.01, state.connection - rates.activityConnectionRelief);  // 566-569
+}
+await save();                                                            // 572
+```
+- 同类型活动**跳过 connection 缓解**（559/565），时间戳与沉浸度照常刷新（LOG.md:52-58 记录该修复动机：防止 Agent Loop 连续 observe 把 connection 榨到 0.01 下限）。
+- 下限硬编码 `0.01`（567，注释「防止清零导致死循环（connection 永远到不了阈值）」）。
+- `state.immersion` 直接赋 `immersionMap[type]`，**不做上限夹紧**。
+
+### 5.3 `getStateSummary()`（697-716）
+
+标签规则：
+- `c`: `<0.20 悠闲` / `<0.35 留意` / `<0.50 想念` / `else 焦躁`（704）
+- `p`: `>0.8 全副武装` / `>0.5 防御` / `>0.3 端着` / `>0.1 微防` / `else 放软`（705）
+- `v`: `>0.3 开心` / `<-0.3 难受` / `else 中性`（706）
+- `a`: `>0.3 焦躁` / `<-0.3 慵懒` / `else 平静`（707）
+- `i`: `i>0.3 && state.lastActivity` → `沉浸于${lastActivity.type}`，否则 `空闲`（708-709）
+- 返回三段用 ` | ` 连接：`[积温] c:..(..) p:..(..) v:..(..) a:..(..) i:..(..)`、`userStatus: ..`、有活动时 `lastActivity: {type} @ {at}`（711-715）。
+
+### 5.4 `analyzeChatSegment` — **未找到（不在 jiwen.js 内）**
+
+- `jiwen.js` 中**没有** `analyzeChatSegment` 的定义、方法或导出（grep 全文件仅命中注释 277 行「连接需求降幅现由外部 LLM 分析（如 `analyzeChatSegment`）通过 applyDelta 注入」）。
+- 引擎侧唯一的 delta 注入口是 `applyDelta(delta)`（576-633）；`tick` 内不再有任何自动扣减（276-277）。
+- 契约只在文档里：GUIDE.md:31-34（架构图标注「你写 prompt，轻量 LLM 读对话，返回 `{ pride, valence, arousal, connection }`」）、GUIDE.md:461-467（要求 LLM 返回纯 JSON：`pride` -0.3~+0.3、`valence` -0.3~+0.3、`arousal` -0.3~+0.3、`connection` -0.5~+0.3）、GUIDE.md:569-580（输出格式示例与幅度上限说明）、GUIDE.md:584-604（兜底代码：`JSON.parse(raw.replace(/```json|```/g,'').trim())`，四轴分别 `clamp` 到上述区间后交给 `applyDelta`；解析失败则 `applyDelta({ connection: -0.15 })`）、GUIDE.md:358-383（调用顺序：分析 → `resetConnection()` → 注入语调 → 生成回复）。
+- 结论：**「校验与夹紧」发生在调用方**（GUIDE 的兜底代码），不在引擎里；Python 重写若只照搬 jiwen.js，需要自己实现这层 clamp。
+
+### 5.5 `getSagaBias` — **不是实例方法（未找到导出）**
+
+- 返回对象（719-747）**没有** `getSagaBias` 键；它只是可选注入回调 `opts.getSagaBias`（215-221），`await` 调用、异常静默。
+- `tick` 内实际读取的键：`.connection`（269）、`.immersion`（281）、`.pride`（296）、`.valence`（328）、`.arousal`（346）；注释（213）声称返回「每分钟偏置」。
+- **无校验、无夹紧、无类型检查**，缺失键用 `|| 0` 兜底（注意 `|| 0` 会把 `NaN`/`0`/`null` 一并变 0，也会把负零保留为 `-0`）。
+- 另有 `opts.getCircadianBias`（226-232）同构，读取 `.arousal`（347）与 `.arousalRegressMult`（348，`|| 1.0`）。
+
+### 5.6 默认文案函数（非 API，被 getPromptContext/getStyleGuidance 调用）
+
+- `defaultPromptContext(state, p)`（751-806）：按 `c` 四段（759-767）、`pr` 五档（770-780）、V×A 四象限+两单轴（783-795）、immersion（798-803）拼 `parts`，`join('\n')`（805）。
+- `defaultStyleGuidance(state, p)`（809-864）：pride 五档（817-827）、V×A 四象限（830-841）、交叉条件 `c>0.40&&pr>0.4`（844-846）、`c>0.35&&v<-0.3&&a>0.3`（847-849）、`c>0.35&&v<-0.3&&a<-0.3`（850-852）、`pr<0.1&&v>0.3`（853-855）、`c>=0.50`（858-860）；`rules.length === 0` 时返回 `''`（862），否则 `'【说话风格】\n' + rules.join('\n')`（863）。
+
+---
+
+## 6. 语调网格 `tone-grid.js`（243 行）
+
+### 6.1 数据结构
+
+- `DEFAULT_PROFILES`（37-129）：**9 个情绪簇**，每个簇是 `{ 1: [string], 2: [...], 3: [...], 4: [...], 5: [...] }`（键为数字字面量；JSON 配置里写成字符串 `"1"`，见 README.md:326-344）。默认每档数组**长度恰为 1**。
+  - 簇名与行号：`excited`（40，注释 v>0.3 a>0.3）、`content`（59，v>0.3 a<-0.3）、`agitated`（68，v<-0.3 a>0.3）、`depressed`（77，v<-0.3 a<-0.3）、`neutral`（86，中性）、`sullen`（95，v低 a中）、`restless`（104，v中 a高）、`pleased`（113，v高 a中）、`calm`（122，v中 a低）。
+  - 档位语义注释：1 = p≤0.1 完全不端着；2 = p>0.1；3 = p>0.3；4 = p>0.5；5 = p>0.8 全副武装（41/44/47/50/53 等）。
+- `DEFAULT_URGENCY`（132-146）：键为 `desperate`（c ≥ 0.50，133-136）、`urgent`（c ≥ 0.35，137-140）、`aware`（c ≥ 0.20，141-144）、`none`（145，`{proactive: null, reactive: null}`）；每档是 `{ proactive: string, reactive: string }`。
+- 合并函数 `mergeProfiles(defaults, overrides)`（149-159）：**按簇浅合并**——`merged[cluster] = { ...defaults[cluster], ...(overrides[cluster] || {}) }`（152），即**自定义的某一档会整档替换该档数组，不做元素级合并**；允许新增不在默认 9 个里的簇（155-157）。
+- `urgencyBoost` 的合并在 `createToneGrid` 内：`{ ...DEFAULT_URGENCY, ...opts.urgencyBoost }`（204-206）——**整个档位（proactive+reactive 一起）被替换**。
+
+### 6.2 查表与回退
+
+```
+function getUnifiedGuidance(state, mode) {                                    // 209
+  const { connection: c, pride: p, valence: v, arousal: a } = state;          // 210
+  const cluster = classifyCluster(v, a);                                      // 212
+  const prideTier = classifyPride(p);                                         // 213
+  const urgencyLevel = classifyUrgency(c);                                    // 214
+  const lines = [];                                                           // 216
+  const profile = profiles[cluster] || profiles.neutral;                      // 217  ← 缺簇回退 neutral
+  const coreLines = profile[prideTier] || profile[3];                         // 218  ← 缺档回退 tier 3
+  lines.push(...coreLines);                                                   // 219
+  const urgencyLine = urgency[urgencyLevel]?.[mode];                          // 221
+  if (urgencyLine) lines.push(urgencyLine);                                   // 222
+  if (lines.length === 0) return '';                                          // 224
+  return lines.join('\n');                                                    // 225
+}
+```
+
+- **缺格回退规则**：簇缺失 → `profiles.neutral`（217）；档位缺失 → `profile[3]`（218）；`urgency` 缺失/为 `null` → 静默跳过（221-222 的可选链 + 真值判断）；全部为空 → 返回 `''`（224-225）。
+- **回退的边界坑**：若 `profile[3]` 也缺失，`coreLines` 为 `undefined`，219 行的 `lines.push(...undefined)` 会抛 `TypeError`（默认 9 簇都填了 tier 3，故默认配置不触发）。
+
+### 6.3 分类函数（判定顺序即优先级）
+
+- `classifyCluster(v, a)`（162-172）：
+  ```
+  v > 0.3 && a > 0.3   → 'excited'    (163)
+  v > 0.3 && a < -0.3  → 'content'    (164)
+  v > 0.3              → 'pleased'    (165)
+  v < -0.3 && a > 0.3  → 'agitated'   (166)
+  v < -0.3 && a < -0.3 → 'depressed'  (167)
+  v < -0.3             → 'sullen'     (168)
+  a > 0.3              → 'restless'   (169)
+  a < -0.3             → 'calm'       (170)
+  否则                  → 'neutral'    (171)
+  ```
+  边界值 `±0.3` 严格比较（`>`/`<`），恰好 0.3 落到后面的分支。
+- `classifyPride(p)`（175-181）：`>0.8→5`、`>0.5→4`、`>0.3→3`、`>0.1→2`、`else 1`。
+- `classifyUrgency(c)`（184-189）：`>=0.50→'desperate'`、`>=0.35→'urgent'`、`>=0.20→'aware'`、`else 'none'`。**这组阈值与 `thresholds` 无关，是硬编码**（默认阈值的 observation/considerContact/forceContact 恰好是 0.20/0.35/0.50）。
+
+### 6.4 工厂与导出
+
+- `createToneGrid(opts = {})`（199-241）：`opts.profiles`（200-202）、`opts.urgencyBoost`（204-206）。
+- 返回：`getUnifiedGuidance(state, mode)`（230）、`getStyleGuidance: (state) => getUnifiedGuidance(state, 'reactive')`（233）、`getPromptContext: (state) => getUnifiedGuidance(state, 'proactive')`（236）、`config: { profiles, urgency }`（239）。
+- 导出：`module.exports = { createToneGrid, DEFAULT_PROFILES, DEFAULT_URGENCY }`（243）。
+- 接入 jiwen 的方式：作为 `opts.getStyleGuidance` / `opts.getPromptContext` 注入（tone-grid.js:16-20 注释、README.md:318-322）。`tone-grid.js` **没有任何测试覆盖**（`jiwen.test.js:6-7` 只 require `./jiwen` 与 `./simulate`）。
+
+---
+
+## 7. 不变量、夹紧与坑（逐条给行号）
+
+### 7.1 断言 / 抛错
+
+- 唯一显式断言：`if (!opts) throw new Error('积温: opts is required')`（27）。
+- 运行时唯一可能抛错处（默认配置下不触发）：tone-grid.js:219 的 `lines.push(...coreLines)`（`profile[3]` 缺失时）。
+- 其余错误全部被吞：`onLog`（142）、`getSagaBias`（218-220）、`getCircadianBias`（229-231）静默；`onLoad`（182-184）与 `onSave`（192-194）只打 `console.warn/error`。
+
+### 7.2 夹紧与防负值（全量清单）
+
+| 位置 | 表达式 | 行号 |
+|---|---|---|
+| 通用工具 | `clamp(v,min,max) = Math.max(min, Math.min(max, v))` | 867-869 |
+| connection 增长 | `clamp(..., axes.connection[0], axes.connection[1])` | 270-274 |
+| immersion 衰减 | `Math.max(axes.immersion[0], ...)`（**只有下限**） | 285-288 |
+| immersion 阻尼因子 | `Math.max(0, immersionFactor)` | 266 |
+| immersion decay 速率 | `Math.max(0, rates.immersionDecay - sagaImmersionBias)` | 284 |
+| pride 防御目标 | `clamp(rates.prideDefendTarget + sagaPrideBias, axes.pride[0], axes.pride[1])` | 299 |
+| pride 静息点 | `clamp(sagaPrideBias, -0.3, 0.3)`（硬编码 ±0.3） | 307 |
+| pride 侵蚀下限 | `Math.max(0, ...)`（硬编码 0） | 319 |
+| valence 回归 | 朝向 `effectiveValenceSetpoint`（已 clamp 到轴范围）单向推进 | 329/332/334 |
+| valence 下沉 | `clamp(..., axes.valence[0], axes.valence[1])` | 342 |
+| arousal 设定点 | `clamp(..., axes.arousal[0], axes.arousal[1])` | 349 |
+| arousal 净效果 | `clamp(netArousal, axes.arousal[0], axes.arousal[1])` + 两条不越过设定点的特判 | 381-386 |
+| 强制 contact urgency | `Math.min(1, c - 0.40)`（**无下限**） | 496 |
+| 自我调节 urgency | `Math.min(1, Math.abs(...) / 1)` | 515 |
+| `setActivity` connection 下限 | `Math.max(0.01, ...)` | 566-569 |
+| `applyDelta` 四轴 | 全部走 `clamp(..., axes.X[0], axes.X[1])` | 620-631 |
+
+### 7.3 时间 / 时区调用（含 `getShanghaiHour` 历史）
+
+- `jiwen.js` 中的全部时间调用：`new Date().toISOString()`（205、561、666）、`Date.now()`（243、283、584）、`new Date(x).getTime()`（243、283）。**没有任何时区转换、没有 `getHours()`、没有 `Asia/Shanghai` 相关调用**。
+- `getShanghaiHour` 在 `jiwen.js` 中 grep **0 命中**；全盘 `D:\SeelAI` grep `Shanghai` 只命中：`ClaraShafiq\jiwen\LOG.md:83-87`（历史记录）与 `Miracii` 的 Python 文件（`app/when.py:29,110`、`app/supervisor.py:46`、`app/persona.py:120`、`persona/_template/memory/schedule.txt:1`）。
+- 历史 bug 的原文（LOG.md:83-87）：标题「bugfix: getShanghaiHour 未定义 (Sanctuary proactive.js)」；正文「`detectSleepFromLastMessage()` 调用了不存在的 `getShanghaiHour()`，导致每次 `runProactiveCheck()` 在睡眠检测阶段抛 `ReferenceError`，Agent Loop 永远不执行。状态引擎 tick 正常跑（connection 持续增长），但引擎实例不做任何决策。」；修复「用已 import 的 `getShanghaiTime()` 解析上海小时数」。
+- **现状**：该 bug 属于私用实例 `Sanctuary proactive.js`（LOG.md 自述）。本工作区 `D:\SeelAI` 下 **`proactive.js` 未找到**、也没有 `Sanctuary` 目录（只有 `ClaraShafiq`、`DSHWS`、`MemecCloud`、`Miracii`、`OnomatoSimulator`），因此**无法验证该修复现状**；而 `jiwen.js` 本身从来没有该函数，重写 Python 版时引擎侧不存在这个依赖点。
+- 引擎侧与时区相关的唯一入口是可注入回调 `opts.getCircadianBias`（226-232）；README.md:173-180 的示例在回调里用 `new Date().getHours()`（宿主本地时区）——**时区语义完全由宿主提供**。
+
+### 7.4 其他坑
+
+- **无 NaN / 非有限值防护**：`jiwen.js` 全文没有 `isNaN` / `Number.isNaN` / `Number.isFinite` / `isFinite`（grep 0 命中；`Number.isFinite` 只出现在 `jiwen.test.js:208-209` 的断言里）。`clamp` 对 `NaN` 返回 `NaN`（`Math.min(max, NaN) → NaN`，`Math.max(min, NaN) → NaN`），因此 `applyDelta({valence: NaN})` 会把该轴永久污染成 `NaN`；`Infinity` 会被 clamp 夹住。
+- **`-0` 字面量**：`axes.connection = [-0, 1]`（31），`DEFAULT_STATE.connection`（151）与 `resetConnection` 结果（644）都是 `-0`；JS 中 `-0 === 0` 为真、`JSON.stringify(-0)` 为 `"0"`（测试 `jiwen.test.js:128` 用 `after === 0` 断言通过）。
+- **默认初值是各轴下界**（151-155），不是 0；`getState()` 冷启动返回 `{connection:-0, pride:-1, valence:-1, arousal:-1, immersion:0}`。
+- **`opts.initialState` 未实现**（仅 JSDoc:14；CLAUDE.md:58 明确说明）；初始状态只能由 `onLoad` 提供，且 `load()` 用浅合并（180）——`onLoad` 返回的对象里**缺失的键会保留 DEFAULT_STATE 的下界值**。
+- **无效键静默忽略**：`connectionGrowth`（40）与 `connectionOnReply`（41）声明后无任何读取点，设置它们不产生效果。
+- **`getLastMessage` / `connectionRateFn` 是同步调用**（235-237），返回值不会被 await；若传入 async 函数，`lastMsg` 会是 Promise，`lastMsg.timestamp` 为 `undefined` → `minutesSinceLastMsg` 保持 `Infinity`。
+- **`tick` 早退不更新轨迹**（207 在 392 之前）。
+- **每轴更新顺序固定**：connection → immersion → pride（防御/回归）→ pride（侵蚀）→ valence（回归）→ valence（下沉）→ arousal（346-387）。同一 tick 内后面的轴能看到前面轴的新值（如 pride 防御用更新后的 connection；arousal 锁定用更新后的 valence）。
+- **`checkThresholds` 是公开方法**（729），外部调用会覆写 `lastTriggerTrace`；它同步执行、不 save。
+- **`getState()` 是浅拷贝**（638），`lastActivity` 对象可被外部改到内部状态。
+- **`config` 未冻结**（740-746），`config.rates.prideDefendRate = 1` 之类会直接改到运行时参数（闭包引用的是同一个对象）。
+- **`_valenceDeltaLog` 不持久化**（172 注释「闭包内，不持久化」），进程重启即清空；只有 `valenceDiminishWindow>0 && valenceDiminishFactor>0` 时才写入。
+- **`save()` 无节流**：`tick`/`applyDelta`/`setActivity`/`resetConnection`/所有 setter 各调用一次。
+- **日志默认会输出到 stdout**：未提供 `onLog` 时，阈值触发那几次 tick 一律 `console.log`（144-146、410-421）。
+
+---
+
+## 8. 测试：`jiwen.test.js`（791 行，34 项，实跑 34 通过 / 0 失败）
+
+### 8.1 测试基建（1-81、778-791）
+
+- 自研 harness：`describe`（14-17，写全局 `testName`）、`it`（19-38，异步结果推进 `_promises`，同步直接计数）、`assert`（40-42）、`assertClose(actual, expected, tolerance, msg)`（44-48）。末尾 `await Promise.all(_promises)` 后打印 `通过: N | 失败: N`，`process.exit(failed > 0 ? 1 : 0)`（778-791）。
+- `NEUTRAL_INIT`（53-57）：`{connection:0, pride:0, valence:0, arousal:0, immersion:0, lastActivity:null, lastTick:null, lastChatAnalysis:null, lastChatMessageId:null, _lastMsgId:0}`。
+- `makeTestJiwen(opts)`（59-81）：`createJiwen({ onSave: async()=>{}, onLoad: async()=>({...NEUTRAL_INIT, ...opts.initialState}), getLastMessage: ()=>lastMsg, connectionRateFn: ()=>0.001, ...opts })` —— **固定基础速率 0.001/min，中性初始状态经 `onLoad` 注入，`opts.initialState` 由测试自己消费**；返回 `{instance, setLastMessage(content), getLastMsg(), getLastMsgId()}`，消息时间戳用 `new Date().toISOString()`（76）。
+
+### 8.2 用例清单（名称 + 断言要点）
+
+**单调性 Monotonicity（86-163）**
+1. `connection 无回复时单调不减`（88-99）：20 次 `tick(5)`，逐步断言 `curr >= prev`。
+2. `收到新消息后 applyDelta 可降低 connection`（101-116）：`tick(30)` 后 `before > 0`；`setLastMessage` → `applyDelta({connection:-0.15})` → `tick(5)`；断言 `after < before`（注释 109：connectionOnReply 已移除）。
+3. `resetConnection 将 connection 归零`（118-129）：`tick(60)` 后 `before > 0.03`；`resetConnection()` 后 `after === 0`。
+4. `pride 在无防御触发时回归 0`（131-146）：`rates{prideDefendThreshold:1.0, prideRegress:0.01}`；`applyDelta({pride:0.5})` → `>0.4`；10×`tick(10)` → `after < high` 且 `after >= 0`。
+5. `valence 回归设定点`（148-162）：`rates{valenceSetpoint:0.3, valenceRegress:0.02, valenceLockThreshold:1.0}`；`applyDelta({valence:-0.4})` → `<-0.3`；10×`tick(10)` → `after > low` 且 `after <= 0.3`。
+
+**边界 Boundary（168-217）**
+6. `五轴均在定义范围内`（170-184）：`applyDelta({pride:3.0, valence:-3.0, arousal:3.0, connection:3.0})` + 30×`tick(60)`；断言 `connection∈[0,1]`、`pride∈[-1,1]`、`valence∈[-1,1]`、`arousal∈[-1,1]`、`immersion∈[0,1]`。
+7. `connection 不倒灌到负值`（186-196）：`tick(5)` 后连续 10 次 `resetConnection()`，每次断言 `c >= 0`。
+8. `长时间空转不爆炸（600分钟）`（198-216）：`rates{connectionAccel:0}`；10×`tick(60)`，断言 `Number.isFinite(connection/pride)`；`assertClose(connection, 0.60, 0.02)`（600×0.001）；`<= 1.0`。
+
+**阈值转移 Thresholds（223-323）**
+9. `connection 跨过 observation 阈值触发 observation`（225-239）：`thresholds{0.20/0.50/0.80}`、`accel 0`；4×`tick(60)`=0.24；断言存在 `observation`。
+10. `connection 跨过 considerContact 且 pride 低时触发 contact`（241-255）：`thresholds{0.20/0.35/0.80, prideBlock 0.50}`、`prideDefendThreshold 1.0`；6×`tick(60)`=0.36；断言存在 `contact`。
+11. `connection 跨过 considerContact 但 pride 高时触发 find_activity`（257-281）：`thresholds{0.20/0.35/0.80, prideBlock 0.30}`、`rates{prideDefendThreshold:0.20, prideDefendTarget:0.60, prideDefendRate:0.02}`；4×`tick(60)` 再 2×`tick(60)`；断言存在 `find_activity` **且不存在** `contact`。
+12. `connection 跨过 forceContact 强制触发 contact`（283-299）：`thresholds{forceContact 0.50, prideBlock 0.50}`、`rates{prideDefendThreshold:0.20, prideDefendTarget:0.9, prideDefendRate:0.1}`；9×`tick(60)`=0.54；断言存在 `contact && forced === true`。
+13. `valence 过低触发 find_activity (low_valence)`（301-310）：`thresholds{valenceActivity:-0.3, arousalAgitation:1.0}`；`applyDelta({valence:-0.5})`；`tick(5)`；断言存在 `find_activity && reason==='low_valence'`。
+14. `arousal 过高触发 find_activity (high_arousal)`（312-322）：`thresholds{valenceActivity:-1.0, arousalAgitation:0.6}`；`applyDelta({arousal:0.8})`；`tick(5)`；断言存在 `find_activity && reason==='high_arousal'`。
+
+**诊断列 Diagnostics（328-409）**（用 `simulate.js` 的 `computeDiagnostics`，simulate.js:124-147）
+15. `effective_pride 正确识别有效拦截窗口`（330-361）：四组状态断言——`c=0.30,p=0.60` → `can_consider=false, can_pride_block=true, effective_pride=false`；`c=0.40,p=0.60` → `can_consider=true, effective_pride=true`；`c=0.55` → `in_force_contact=true, effective_pride=false`；`c=0.40,p=0.30` → `can_pride_block=false, effective_pride=false`。
+16. `effective_pride 在新参数下存在有效拦截窗口`（363-408）：`rates{connectionAccel:1.5, accelDelay:30, prideDefendThreshold:0.12, prideDefendTarget:0.45, prideDefendRate:0.018}`、`thresholds{0.12/0.22/0.35, prideBlock:0.25, valenceActivity:-0.25, arousalAgitation:0.55}`、`connectionRateFn: ()=>0.007`；50 次 `tick(1)` 逐分钟采样；断言 `effective_pride` 出现次数 `>0` 且 `in_force_contact` 出现次数 `>0`；运行输出实测 `c:0→0.478 p:0→0.450 | effective_pride:12次 force:11次`。
+
+**模拟引擎 Simulate（414-489）**
+17. `同一场景不同参数产出不同轨迹`（416-446）：7 事件场景 + 两组 `connectionRateFn`（0.0007 / 0.003）；断言结果数 2、名称顺序、`trajectory.length === scenario.length`、240min 时快速组 `connection` 更大。
+18. `输出包含诊断列`（448-462）：每行都有 `diagnostics`，且 `can_consider / can_pride_block / effective_pride` 为 boolean。
+19. `apply_delta 正确修改状态`（464-476）：`apply_delta{pride:1.3, valence:0.8}` 后行断言 `pride > 0.9`（夹紧 1.0）、`valence > 0.7`。
+20. `reset_connection 清零 connection`（478-488）：`tick(30)` → `reset_connection`；断言 `connection === 0`。
+
+**Connection 重设计 ConnectionRedesign（494-625）**
+21. `accelDelay 前线性增长，之后加速`（496-537）：`connectionRateFn: ()=>0.01`、`rates{connectionAccel:2.0, accelDelay:30}`；把 `lastMsg.timestamp` 设为 31 分钟前；30×`tick(1)` → `c > 0.35`；再 10×`tick(1)` → `c > 0.50`；对照实例 `accelDelay:0` 且无消息（`Infinity >= 0`）40×`tick(1)` → `c > 0.50`。注释 497：accelDelay 依据真实时间而非 tick 分钟数。
+22. `accelDelay 默认 0 保持向后兼容（立即加速）`（539-552）：不传 `accelDelay`，`connectionAccel:1.0`，`rate 0.01`；20×`tick(1)` → `c > 0.20`（注释：连续积分 `e^0.2-1≈0.221`）。
+23. `valence 轻度不开心时 connection 增长加速（boost）`（554-577）：`rates{connectionAccel:0, valenceConnectBoost:1.4, valenceConnectBoostThreshold:-0.2}`；`tick(10)` 记 `normalGrowth`；`resetConnection()` + `applyDelta({valence:-0.3})` + `tick(10)`；断言 `boosted > normal × 1.2`。
+24. `valence 严重低落时 connection 增长减速（dampen）`（579-604）：追加 `valenceConnectDampen:0.4 / Threshold:-0.4`；`applyDelta({valence:-0.5})`；断言 `dampened < normal × 0.7`。
+25. `valence ≥ 0 时 connection 增长不变（中性倍率）`（606-624）：`applyDelta({valence:0.2})` + `tick(10)`；`assertClose(growth, 0.10, 0.005)`。
+
+**回归 Regression（630-686）**
+26. `tick 传入 0 或负数不推进状态`（632-644）：`tick(0)`、`tick(-5)` 后 `connection` 与 before 严格相等。
+27. `tick 超过60分钟被截断`（646-656）：`tick(120)` → `assertClose(connection, 0.06, 0.005)`。
+28. `setActivity 设置沉浸度并部分缓解 connection`（658-674）：`rates{activityConnectionRelief:0.1}`；`tick(50)` 后 `>0.02`；`setActivity('reading','测试书')` → `immersion >= 0.5`、`connection` 下降、`lastActivity.type === 'reading'`。
+29. `getPromptContext 和 getStyleGuidance 返回非空字符串`（676-685）：`tick(50)` 后 `typeof ctx === 'string' && ctx.length > 0`；`typeof style === 'string'`。
+
+**决策轨迹 TriggerTrace（691-773）**
+30. `pride 挡住开口 + immersion 缓冲：轨迹能说明为什么没开口`（693-709）：`initialState{connection:0.40, pride:0.90, immersion:0.50}`、`rates{connectionAccel:0, prideRegress:0, immersionDecay:0}`、`connectionRateFn: ()=>0`；`tick(1)`；断言 `triggers.length === 0`；trace 中存在 `gate==='开口' && !fired`，`reason` 同时匹配 `/pride/` 与 `/immersion/`，`detail.pride >= 0.50`。
+31. `pride 挡住但 immersion 不高：轨迹标出转成了 find_activity`（711-725）：`immersion:0.05`；断言存在 `find_activity && reason==='pride_block'`，trace 中该条 `divertedTo === 'find_activity'`。
+32. `正常开口时轨迹记录 fired`（727-740）：`pride:0.10`；断言存在 `contact`，trace 有 `fired && action==='contact'`。
+33. `还没到观察线时，轨迹说明还差多少`（742-756）：`connection:0.05`；trace 有未触发记录，`reason` 匹配 `/观察线/`，`detail.还差 > 0`。
+34. `explainTrigger 给出一句话结论`（758-771）：返回非空字符串且匹配 `/未触发/`。
+
+### 8.3 实跑输出（可复现命令）
+
+```
+node D:\SeelAI\ClaraShafiq\jiwen\jiwen.test.js
+...
+  通过: 34  |  失败: 0
+```
+（进程退出码 0；输出中含大量 `[积温] tick …` 日志行，例如 `[积温] tick 1min | c:0.40→0.40 p:0.90→0.90 v:0.00→0.00 a:0.00→0.00 i:0.05 | 速率:0.0000/min | 触发: find_activity(pride_block)`。）
+
+### 8.4 `simulate.js` 相关（测试依赖，非引擎）
+
+- `simulate(scenario, paramsArray)`（simulate.js:28-121）：事件类型 `set_last_message` / `apply_delta`（含 `mood` → `valence` 映射，76-77）/ `reset_connection` / `tick`；推进时间用 `instance.tick(event.time - virtualTime)`（53-56）；每事件记录 `{time, action, connection, pride, valence, arousal, immersion, triggers, diagnostics}`（97-112）。
+- `computeDiagnostics(state, thresholds)`（124-147）：`can_consider = c >= considerContact`；`can_pride_block = p >= prideBlock`；`effective_pride = can_consider && can_pride_block && c < forceContact`；`in_observation = c >= observation && c < considerContact`；`in_force_contact = c >= forceContact`；`in_valence_activity = v <= valenceActivity`；`in_arousal_agitation = a >= arousalAgitation`。
+- `defaultConnectionRateFn(lastMsg)`（150-160）：无消息 `0.0007`；`/晚安|去睡了|睡了|睡觉/ → 0.0003`；`/出门|上班|开会/ → 0.0005`；`text.length < 10 → 0.0010`；否则 `0.0007`。
+- 导出 `{ simulate, computeDiagnostics, defaultConnectionRateFn, toCSV, toCompareTable }`（241）。
+
+---
+
+## 9. 「未找到 / 未确认」汇总
+
+| 问题 | 结论 | 依据 |
+|---|---|---|
+| `analyzeChatSegment` 在 jiwen.js？ | **未找到**。无定义、无导出；只有 277 行注释提及。 | grep 全文；返回值 719-747 |
+| 引擎内 delta 校验/夹紧？ | **未找到**。`applyDelta` 无幅度/类型校验，仅写轴时 clamp。校验在调用方（GUIDE.md:584-604）。 | 576-633 |
+| `getSagaBias` 是实例方法？ | **未找到**。只有 `opts.getSagaBias` 回调（215-221）。 | 719-747 |
+| `opts.initialState`？ | **未找到读取处**，仅 JSDoc:14；CLAUDE.md:58 说明不支持。 | 30-36 / 164 |
+| `getShanghaiHour`？ | **jiwen.js 中不存在**（grep 0 命中）。历史 bug 在私用实例 `Sanctuary proactive.js`（LOG.md:83-87），该文件不在本工作区（`D:\SeelAI` 下无 `proactive.js` / `Sanctuary`），**现状无法验证**。 | LOG.md:83-87；glob/grep |
+| 时区处理？ | **未找到**。引擎只用 `Date.now()` / `new Date().toISOString()`；时区语义由宿主注入的 `getCircadianBias` 决定（README.md:173-180 用 `new Date().getHours()`）。 | 205/243/283/561/584/666 |
+| NaN 防护？ | **未找到**。全文无 `isNaN` / `Number.isFinite`；`clamp` 会让 NaN 穿透。 | 867-869；grep |
+| `connectionGrowth` / `connectionOnReply` 生效？ | **未找到读取点**，声明即死键。 | 40-41；grep |
+| tone-grid 测试？ | **未找到**（`jiwen.test.js` 只 require jiwen 与 simulate）。 | jiwen.test.js:6-7 |
+| `docs/index.html` 内的 `tick(m)`？ | 存在一个独立的浏览器演示实现（index.html:187），grep 不到 `createJiwen`/`prideBlock`/`analyzeChatSegment`，**不是引擎本体**，未纳入本规格。 | grep docs/index.html |
+| README 说「29 项测试」？ | 与实测不符：当前 **34 项**（LOG.md:123 记录 29 → 34）。 | 实跑 + LOG.md:123 |

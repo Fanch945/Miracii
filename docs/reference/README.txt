@@ -16,6 +16,7 @@
 |---|---|
 | [clarashafiq.txt](clarashafiq.txt) | 三个参照仓库的结构、关键源码行号、能抄与不能抄的结论 |
 | [jiwen.txt](jiwen.txt) | 积温引擎的完整机制要点（五轴 / 阈值 / 漂移 / 闸门 / 调参史） |
+| [jiwen-spec.txt](jiwen-spec.txt) | **逐行可执行规格**（9 节，每个公式与常量带源码行号 + SHA256 基线）——写 Python 版照这份，不必再读 JS |
 | [memory-frontier.txt](memory-frontier.txt) | 记忆系统前沿方案对照、可落地清单、引用勘误表 |
 
 ## 读法

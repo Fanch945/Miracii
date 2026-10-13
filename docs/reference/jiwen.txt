@@ -1,7 +1,8 @@
 # 积温 jiwen：机制要点
 
 来源：`D:\SeelAI\ClaraShafiq\jiwen\jiwen.js`（871 行单文件、零依赖、MIT）＋ README ＋ 在线演示。
-**P1 要照着重写成 Python。** 逐行规格见同目录下 P1 阶段的提取结果；这里先记可查的要点。
+**逐行可执行规格见 [jiwen-spec.txt](jiwen-spec.txt)**（9 节，每个公式与常量后带源码行号，附 SHA256 基线）。
+**P1 按那份规格重写为 Python**；本文件是给人看的机制摘要。
 
 ## 主张
 
@@ -65,8 +66,11 @@ immersionFactor = 1 - immersion × immersionDampenConnection   # L262-264
 ## 调参史（`LOG.md`，比阈值本身更值钱）
 
 - `connectionAccel` **1.5 → 1.0**、`accelDelay` **30 → 45 分钟**——"两小时就强制开口"是她实际踩过的坑。
-- 曾有一个 `getShanghaiHour is not defined` 让 Agent Loop **永不执行**（她自述）。
-- 测试：实跑 `node jiwen.test.js` → **34 项通过**（README 写 29，文档滞后）。
+- ~~曾有一个 `getShanghaiHour is not defined` 让 Agent Loop 永不执行~~ ——**订正（2026-10-14）**：
+  该 bug 记在 `LOG.md:83-87`，但**不在 jiwen.js 里**（全文件 grep 0 命中），位置是私用实例
+  `Sanctuary proactive.js` 的 `detectSleepFromLastMessage()`，**该文件不在本工作区**，现状无法验证。
+  我们这版引擎侧不存在这个依赖点（只读调用方给的时间戳）。
+- 测试：实跑 `node jiwen.test.js` → **34 项通过**（README 写 29，`LOG.md:123` 记了 29→34 的演进，文档滞后）。
 
 ## 外部
 
@@ -84,3 +88,17 @@ immersionFactor = 1 - immersion × immersionDampenConnection   # L262-264
 2. **一条 hesitation（犹豫）轴**，抬高 `contact` 阈值并给出"欲言又止"的样式指令——**用显式状态实现不确定度，不用随机数**，否则就退回骰子了；
 3. **`user_state` 输入**（由轻量模型从最近对话推断：忙碌/放松/低落），作为 `contact` 阈值的调制因子——把"角色中心"推向"关系中心"（参照 ProMemAssist 的批评）；
 4. **LLM 只做两件事**：把状态翻译成人话、对阈值做一次性微调；**积分永远由确定性代码做**。
+
+（顺带：第 3 条前辈其实已经留了口子——`DEFAULT_STATE.userStatus` 字段与 `setUserStatus/getUserStatus` 都在，
+只是**没有任何默认调制**；我们这版把它接到了门槛上。）
+
+## 规格纠正的三个预期（2026-10-14 核实）
+
+| 原本以为 | 实际 |
+|---|---|
+| 有 `analyzeChatSegment` 做对话分析 | **不存在**（无定义无导出，仅 jiwen.js:277 一句注释提及）。引擎侧唯一入口是 `applyDelta(delta)`，**夹紧在调用方**（GUIDE.md 规定前三轴 ±0.3、connection −0.5~+0.3） |
+| `getSagaBias` 是实例方法 | **不是**。只有可选回调 `opts.getSagaBias`（jiwen.js:215-221），按轴读加性偏置；同理还有 `opts.getCircadianBias` |
+| 冷启动各轴默认 0 | **不是**。`DEFAULT_STATE` 取各轴**下界**（`pride=-1, valence=-1, arousal=-1`）；`opts.initialState` 只有 JSDoc 声明、实现从未读取。她自己的测试也绕过它（用 `onLoad` 注入中性状态） |
+
+**我们这版有意偏离**：初始值取 0（中性），不取轴下界——因为那等于让她一开机就"骄傲见底、心情最差"。
+偏离点记在这里，不藏在代码里。

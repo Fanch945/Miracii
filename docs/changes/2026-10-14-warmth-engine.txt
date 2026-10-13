@@ -1,0 +1,62 @@
+# P1 第一步：积温引擎通用层（`app/warmth.py`）
+
+- 日期：2026-10-14
+- 作者：DSH（DeepSeek Harness agent）
+- 关联提交：本文件所在提交
+- 关联设计文档：[docs/reference/jiwen-spec.txt](../reference/jiwen-spec.txt)（逐行规格）、[docs/reference/jiwen.txt](../reference/jiwen.txt)
+
+## 背景
+
+主动开口在 Miracii 里是**结构性饿死**的：25 天 25 次 tick，`speak=true` 零次。根因不在提示词——`clock.due_phase()` 只返回巩固阶段，supervisor **从没有机会**回答"我现在想不想找她"；`schedule.tick_minutes` 被解析但从未被任何代码读取。
+
+P1 按已决定的分步走：**先通用引擎，再 template，再人格特化**。这一步只做通用层——借 `ClaraShafiq/jiwen` 的思路重写，不是移植。
+
+## 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `app/warmth.py` | 新增。确定性引擎：五轴漂移（connection / pride / valence / arousal / immersion）＋ **hesitation 轴** ＋ 声明式 `extra_axes` 特化槽位 ＋ `user_state` 门槛调制 ＋ 决策轨迹（每闸门报"差多少/过了多少"）＋ 数值翻人话（`prompt_context` / `style_guidance`） |
+| `tests/test_warmth.py` | 新增。34 项：确定性、60 分钟上限、各轴漂移、闸门三选一与互斥、犹豫与 user_state 调制、特化轴、NaN 防护 |
+| `docs/reference/jiwen-spec.txt` | 由子代理逐行读出的规格（745 行，带行号与 SHA256 基线）搬进仓库，供两个 agent 共查 |
+| `docs/reference/jiwen.txt` | **订正两处我写错的地方**（见下） |
+
+阈值继承前辈**调参后**的起点（0.20 / 0.35 / 0.50 / 0.50、加速度 1.0、缓冲 45 分钟），不是它的出厂值。
+
+## 验证
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+# Ran 96 tests ... OK (skipped=1)      ← P0.5 时 62 项，本轮 +34
+
+.venv\Scripts\python.exe -m app.warmth --minutes 20 --steps 8
+# connection 0.014 → 0.117（每分钟 0.0007 起步，过 45 分钟后增速可见地抬起来）
+# valence 因"等待下沉"缓慢变负；闸门未到线时 explain() 给出还差多少
+```
+
+与规格逐条对齐过：`tick` 早退（`minutes<=0` 不推进）、单次上限 60 分钟、`accelFactor=(1+c)^accel` 仅在超 `accelDelay` 后启用、`effectiveRate` 四因子乘积、immersion 衰减用 `min(mins, sinceActivity)` 并在 `<=0.01 且 >60 分钟`时清空、pride 的防御/回归、valence 锁定、arousal 的"回归力不越过设定点"特判、**开口类闸门三选一互斥**、`triggers.length ∈ {0,1,2}`、`forced` 只在强制线出现。
+
+## 有意偏离参照实现的地方（都写进文档，不藏在代码里）
+
+| 偏离 | 理由 |
+|---|---|
+| 初始值取 0（中性），不取轴下界 | 参照的 `DEFAULT_STATE` 取 `axes.X[0]`，冷启动是 `pride=-1, valence=-1, arousal=-1`——等于一开机就"骄傲见底、心情最差"。她自己的测试也绕过这点（用 `onLoad` 注入中性状态） |
+| `apply_delta` 丢弃非有限值 | 参照无 NaN 防护，`clamp` 会让 NaN 穿透并**永久污染该轴** |
+| 闸门轨迹用具体名字（`contact` / `force_contact` / `blocked`…）而非只有"开口/自我调节"两组 | 调试时想知道是**哪一条**挡的 |
+| `urgency` 用真阈值算，不用硬编码的 0.30 / 0.40 | 参照里那两个数是写死的，改了阈值就对不上 |
+| `user_state` 接到门槛上 | 参照有 `userStatus` 字段与 setter，但**没有任何默认调制** |
+
+## 订正（我自己写错的）
+
+1. `getShanghaiHour is not defined` 那个"让 Agent Loop 永不执行"的 bug——我原先记成 jiwen 的问题。**它不在 jiwen.js 里**（全文件 grep 0 命中），位置是私用实例 `Sanctuary proactive.js`，**不在本工作区**，现状无法验证。
+2. `analyzeChatSegment` **不存在**：引擎侧唯一入口是 `applyDelta(delta)`，夹紧在调用方（GUIDE.md 规定前三轴 ±0.3、connection −0.5~+0.3）。
+
+## 风险与未决
+
+- **还没接进运行时**：空闲 tick（启用 `tick_minutes`）、状态持久化、输出走 `speak` 通道都在下一步。
+- **`tone-grid` 未做**：现在是简化版 `style_guidance`；9 簇 × 5 档的语调网格与 `urgency` 分类要单独一步。
+- **`saga` / `circadian` 两个可选钩子未做**：它们是 P2「情感缝合线」的接口（记忆的 Saga 情感主轴 → 引擎偏置）。
+- 阈值仍是前辈的起点，**未经 Miracii 校准**；标注数据（"想开口没开口"10–20 条）还没开始攒。
+
+## 复核
+
+（留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
