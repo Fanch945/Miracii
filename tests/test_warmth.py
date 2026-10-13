@@ -438,10 +438,57 @@ class ConfigTests(unittest.TestCase):
         shown = warmth.effective_config(warmth.defaults())
         self.assertEqual(
             set(shown),
-            {"thresholds", "rates", "user_state_lift", "speak_cooldown_minutes", "reply_delta", "persona", "extra_axes"},
+            {
+                "thresholds",
+                "rates",
+                "user_state_lift",
+                "speak_cooldown_minutes",
+                "max_tick_minutes",
+                "reply_delta",
+                "persona",
+                "extra_axes",
+            },
         )
         self.assertIn("accel_delay", shown["rates"])
         self.assertIn("hesitation_lift", shown["thresholds"])
+
+    def test_every_config_field_can_be_set_from_the_file(self):
+        """复核第二轮抓到：max_tick_minutes 加进了 Config 却没接进 load_config，「可配」是空话。
+
+        这条测试是结构性的：**以后往 Config 上加字段而不在这里登记，它会失败。**
+        """
+        samples = {
+            "thresholds": {"observation": 0.3},
+            "rates": {"connection_base": 0.001},
+            "extra_axes": [{"name": "执念", "rate": 0.01}],
+            "user_state_lift": {"busy": 2.0},
+            "speak_cooldown_minutes": 30.0,
+            "max_tick_minutes": 120.0,
+            "reply_delta": {"connection": -0.1},
+            "persona": {"self_name": "我"},
+        }
+        self.assertEqual(set(samples), set(warmth.Config.__dataclass_fields__))
+        for field_name, value in samples.items():
+            with self.subTest(field=field_name):
+                self.write({field_name: value})
+                config, notes = warmth.load_config(path=self.path)
+                self.assertFalse([n for n in notes if "顶层键不认识" in n], notes)
+                self.assertNotEqual(getattr(config, field_name), getattr(warmth.defaults(), field_name))
+
+    def test_max_tick_minutes_actually_reaches_the_engine(self):
+        self.write({"max_tick_minutes": 120.0})
+        config, _ = warmth.load_config(path=self.path)
+        eng = warmth.Engine(config)
+        eng.tick(180)  # 被 120 截住，但比默认的 60 走得多
+        self.assertAlmostEqual(eng.state.connection, 0.0007 * 120, places=6)
+
+    def test_a_silly_max_tick_minutes_is_refused(self):
+        for bad in (0, -5, "很久"):
+            with self.subTest(bad=bad):
+                self.write({"max_tick_minutes": bad})
+                config, notes = warmth.load_config(path=self.path)
+                self.assertEqual(config.max_tick_minutes, 60.0)
+                self.assertTrue(any("max_tick_minutes" in note for note in notes))
 
 
 class RuntimeTests(unittest.TestCase):
@@ -523,18 +570,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertAlmostEqual(warmth.seconds_until_due(now=start), warmth.tick_minutes() * 60.0)
         self.assertEqual(warmth.seconds_until_due(now=start + timedelta(hours=3)), 0.0)
 
-    def test_tick_minutes_comes_from_the_schedule(self):
-        """复核指出：早先这条把 tick_minutes 自己 mock 掉再断言它等于 7——等于什么都没测。"""
-        from app import supervisor
-
-        with mock.patch.object(supervisor, "parse_schedule", return_value={"tick_minutes": 7}):
+    def test_tick_minutes_reads_the_real_schedule_file(self):
+        """复核第二轮指出：上一版只是 mock 掉 parse_schedule，仍然没有真的打开日程文件。"""
+        (self.root / "memory").mkdir(parents=True, exist_ok=True)
+        (self.root / "memory" / "schedule.txt").write_text(
+            "stm_minutes: 5\nroutine_minutes: 30\ntick_minutes: 7\nquota_speak_per_day: 3\n", encoding="utf-8"
+        )
+        with mock.patch.object(persona, "folder", lambda persona_id=None: self.root):
             self.assertEqual(warmth.tick_minutes("x"), 7.0)
-        with mock.patch.object(supervisor, "parse_schedule", return_value={}):
-            self.assertEqual(warmth.tick_minutes("x"), 20.0)  # 缺配置用默认
-        with mock.patch.object(supervisor, "parse_schedule", return_value={"tick_minutes": "soon"}):
-            self.assertEqual(warmth.tick_minutes("x"), 20.0)  # 坏值也用默认
-        with mock.patch.object(supervisor, "parse_schedule", return_value={"tick_minutes": 0}):
-            self.assertEqual(warmth.tick_minutes("x"), 20.0)  # 0 等于没配
+        (self.root / "memory" / "schedule.txt").write_text("stm_minutes: 5\n", encoding="utf-8")
+        with mock.patch.object(persona, "folder", lambda persona_id=None: self.root):
+            self.assertEqual(warmth.tick_minutes("x"), 20.0)  # 没写就用默认
 
     def test_ambient_tick_never_touches_memory_files(self):
         (self.root / "memory" / "working.txt").write_text("短期工作台", encoding="utf-8")

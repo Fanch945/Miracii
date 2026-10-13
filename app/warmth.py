@@ -209,6 +209,7 @@ def template() -> dict:
         },
         "user_state_lift": {"active": 1.0, "busy": 1.35, "away": 1.1, "sleeping": 2.0},
         "speak_cooldown_minutes": 45.0,
+        "max_tick_minutes": 60.0,
         "reply_delta": {"connection": -0.25, "valence": 0.05, "arousal": -0.15, "hesitation": -0.20},
         "extra_axes": [],
     }
@@ -270,7 +271,16 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
     notes: list[str] = []
 
     # 顶层键打错字（"rate" 少了 s）会静默失效——宁可吵一声
-    known = {"thresholds", "rates", "user_state_lift", "extra_axes", "persona", "speak_cooldown_minutes", "reply_delta"}
+    known = {
+        "thresholds",
+        "rates",
+        "user_state_lift",
+        "extra_axes",
+        "persona",
+        "speak_cooldown_minutes",
+        "max_tick_minutes",
+        "reply_delta",
+    }
     notes += [
         f"{key}: 顶层键不认识，已忽略" for key in raw if key not in known and not str(key).startswith("_")
     ]
@@ -279,18 +289,23 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
     rates, extra_rates = _coerce_fields(base.rates, raw.get("rates", {}))
     notes += extra + extra_rates
 
-    cooldown = raw.get("speak_cooldown_minutes")
-    if cooldown is not None:
+    def _positive(key: str, default: float, *, allow_zero: bool = False) -> float:
+        raw_value = raw.get(key)
+        if raw_value is None:
+            return default
         try:
-            value = float(cooldown)
+            number = float(raw_value)
         except (TypeError, ValueError):
-            notes.append(f"speak_cooldown_minutes: {cooldown!r} 不是数字，用默认")
-        else:
-            cooldown = value if math.isfinite(value) and value >= 0 else None
-            if cooldown is None:
-                notes.append("speak_cooldown_minutes: 坏值，用默认")
-    else:
-        cooldown = base.speak_cooldown_minutes
+            notes.append(f"{key}: {raw_value!r} 不是数字，用默认")
+            return default
+        if not math.isfinite(number) or number < 0 or (number == 0 and not allow_zero):
+            notes.append(f"{key}: {raw_value!r} 不是正数，用默认")
+            return default
+        return number
+
+    cooldown = _positive("speak_cooldown_minutes", base.speak_cooldown_minutes, allow_zero=True)
+    # 复核抓到：字段加进 Config 却没接进 load_config，等于"可配"是空话
+    max_tick = _positive("max_tick_minutes", base.max_tick_minutes)
 
     reply = raw.get("reply_delta")
     if isinstance(reply, dict) and reply:
@@ -363,6 +378,7 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
         extra_axes=tuple(specs),
         user_state_lift=lifts,
         speak_cooldown_minutes=cooldown,
+        max_tick_minutes=max_tick,
         reply_delta=reply,
         persona=persona,
     )
@@ -386,6 +402,7 @@ def effective_config(config: Config) -> dict:
         "rates": {f: getattr(config.rates, f) for f in config.rates.__dataclass_fields__},
         "user_state_lift": dict(config.user_state_lift),
         "speak_cooldown_minutes": config.speak_cooldown_minutes,
+        "max_tick_minutes": config.max_tick_minutes,
         "reply_delta": dict(config.reply_delta),
         "persona": dict(config.persona),
         "extra_axes": [

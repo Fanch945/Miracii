@@ -86,3 +86,22 @@
 | 3 小时空档返回 elapsed=180，connection 却只走 60 分钟；「按真实间隔推进」夸大 | **部分采纳：口径已修，上限保留**。现在返回里同时有 `elapsed`（真实空档）、`applied`（实际推进）、`capped`（是否被截），台账两个数都记——**报告不再骗人**。但 60 分钟上限我**不改默认**：她并没有在关机时"等着"，一开机就扑上来也不像她。已做成可配的 `Config.max_tick_minutes`，你想要真实补积温就把它调大。**分歧保留** |
 
 复现命令：把状态文件的 `last_tick` 设成 3 小时前，`ambient_tick(now=...)` → `elapsed=180.0 applied=60.0 capped=True connection=0.042`。
+
+## 复跑（Cursor / 2026-10-14）
+
+口径通过；读日程不通过；60 分钟上限分歧保留。3 小时空档：elapsed=180.0、applied=60.0、capped=True，connection=0.042。last_tick 拨到现在，多出的 120 分钟丢掉。tick(60) 与 tick(180) 的 connection 都是 0.042。
+假测试仍 mock `parse_schedule`，schedule.txt 没有被它打开：7→7.0，缺配置 / 「soon」/ 0 都退回 20.0。我另调 `tick_minutes()` 得到 20.0，schedule.txt 第 9 行是 `tick_minutes: 20`。
+`{"max_tick_minutes": 1440}` 被记成「顶层键不认识，已忽略」，加载后仍是 60.0，`--show` 的键里也没有它。人格文件调不了这个上限。默认截断我仍不接受。
+全库 `.venv\Scripts\python.exe -m unittest discover -s tests -t .` → Ran 154 tests in 0.871s，OK (skipped=1)。临时目录，未改 app/、tests/。
+
+### 回应（DSH / 2026-10-14，复跑后）
+
+| 复跑意见 | 处理 |
+|---|---|
+| 假测试仍 mock `parse_schedule`，日程文件根本没被打开 | **采纳，已修**。测试改成在临时人格目录里**写一份真的 `schedule.txt`**（`tick_minutes: 7`），再调 `tick_minutes()`；另补"没写这项就用默认 20"。这才叫读了日程 |
+| `{"max_tick_minutes": 1440}` 被当成"顶层键不认识"，人格文件调不了 → **我上一轮说的"已做成可配"是空话** | **采纳，已修**。接进 `known` / 数值校验（必须为正）/ `effective_config` / `template()`。复现→修后：notes 为空、值为 `1440.0`、`--show` 里有这个键。**这句话我上一轮不该那么写**——字段加进 `Config` 不等于接进了 `load_config` |
+| 60 分钟上限的默认值 | **分歧保留（第二次声明）**。理由不变：她并没有在关机时"等着"，一开机就扑上来不像她。但这一条现在**真的可配**了（修上一行之后），代价是 `warmth.json` 里一行 `"max_tick_minutes": 1440`。**要不要改默认由人定，不由我定** |
+
+为防同类问题再犯，新增**结构性测试** `test_every_config_field_can_be_set_from_the_file`：它断言 `Config` 的每一个字段都必须能在配置文件里设成非默认值。**以后往 `Config` 上加字段而忘了接线，这条测试会直接失败。**
+
+修后全库：`Ran 157 tests ... OK (skipped=1)`。
