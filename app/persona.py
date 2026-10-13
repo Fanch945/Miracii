@@ -60,6 +60,17 @@ def display_name(persona_id: str | None = None) -> str:
     return persona_id or MAIN_ID
 
 
+def other_name(persona_id: str | None = None) -> str:
+    """The human on the other side of the chat, from profile `对方：`."""
+    profile = _read(folder(persona_id) / "profile.txt")
+    for line in profile.splitlines():
+        if line.startswith("对方：") or line.startswith("对方:"):
+            value = line.split("：", 1)[-1].split(":", 1)[-1].strip()
+            if value:
+                return value
+    return "对方"
+
+
 def secondary_text(persona_id: str | None = None) -> str:
     return _read(folder(persona_id) / "secondary" / "pending.txt")
 
@@ -69,7 +80,22 @@ def always_lore(persona_id: str | None = None) -> str:
 
 
 def working_memory(persona_id: str | None = None) -> str:
-    return _read(folder(persona_id) / "memory" / "working.txt")
+    """Live rehearsal only. A finished impression belongs to recall, not every turn."""
+    raw = _read(folder(persona_id) / "memory" / "working.txt")
+    if not raw:
+        return ""
+    if "# stm " in raw:
+        kept = []
+        started = False
+        for line in raw.splitlines():
+            if line.startswith("# stm "):
+                started = True
+            if started:
+                kept.append(line)
+        return "\n".join(kept).strip()
+    if "已写入印象" in raw:
+        return ""
+    return raw
 
 
 def system_prompt(persona_id: str | None = None, scan_text: str = "") -> str:
@@ -84,6 +110,7 @@ def system_prompt(persona_id: str | None = None, scan_text: str = "") -> str:
     working = working_memory(persona_id)
     extra = secondary_text(persona_id)
     recalled = format_for_prompt(select_entries(persona_id, scan_text))
+    from .recall import format_for_prompt as format_memory
     from .supervisor import parse_schedule
     from .when import prompt_block, wanted
 
@@ -109,6 +136,9 @@ def system_prompt(persona_id: str | None = None, scan_text: str = "") -> str:
         parts.extend(["", "【常驻设定】", always])
     if working:
         parts.extend(["", "【短期工作记忆】", working])
+    remembered = format_memory(persona_id, scan_text)
+    if remembered:
+        parts.extend(["", remembered])
     if recalled:
         parts.extend(["", recalled])
     parts.extend(
@@ -132,6 +162,8 @@ def system_prompt(persona_id: str | None = None, scan_text: str = "") -> str:
         [
             "",
             "只输出你要对对方说的那一句或几句。不要输出内心独白、分析、Markdown 标题或编号列表。",
+            "对话里的原文只是还没写进记忆的这几句，没有时间标记。更早的事不在这段原文里。",
+            "更早的内容只在【短期工作记忆】【已采纳的事实】【那次印象】出现时才算记得，对方没提起就不要翻出来。",
             "长篇背景、复杂人际关系、履历技能若对方没提起，不要主动讲成自我介绍。",
         ]
     )

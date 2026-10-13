@@ -10,10 +10,13 @@ data/heartbeat.log
 data/supervisor.jsonl
 data/clock.json
 data/media/
+data/app.log
+data/notices.jsonl
 .env
 APIkeys.txt
 .DS_Store
 Thumbs.db
+*.lnk
 dist/
 build/
 *.spec

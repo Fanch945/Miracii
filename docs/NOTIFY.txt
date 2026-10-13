@@ -1,0 +1,115 @@
+# 主动开口的桌面提醒：Windows 通知 + 右下角浮动弹窗
+
+她开口的时候，人不一定在窗口前。心跳把那一句写进库之后，顺手在桌面上敲一下：
+一条系统通知，加一块右下角的浮层。**窗口在前台时不提醒**——你正看着，页面自己会显示。
+
+## 触发点
+
+只有一处，在 `app/heartbeat.py` 的 `deliver_speak()` 里：
+
+```text
+监督 speak=true → 生成那一句 → 写 sqlite / transcripts → notify.proactive()
+```
+
+`notify.proactive()` 的返回值（`fired` / `reason` / `toast` / `popup`，出错时带
+`toast_error` / `popup_error`）会以 `ping:` 开头写进 `data/heartbeat.log`——**弹没弹都写**，
+静默的原因也在里面；提醒自己抛错时写 `notify failed:`，心跳继续。它只跟着**已经决定要说的那一句**
+走，不额外制造开口：安静时段、每日 quota、正在聊，仍然由 `_may_speak()` 在更前面挡住。
+
+## 焦点规则
+
+`app/notify.py: window_focused()`。前台窗口满足任一条就算「人在看」：
+
+| 条件 | 覆盖的场景 |
+|---|---|
+| 前台窗口属于本进程 | `python -m app` 的 pywebview 桌面窗口 |
+| 前台窗口标题以 `Miracii` 开头 | 浏览器标签页在看这个页面；心跳单独进程跑时的桌面窗口 |
+
+第二条是标题规则，所以**跨进程也成立**：`python -m app.heartbeat` 单独跑时，主进程的窗口
+同样能被认出来。代价是别的程序正好有同名前缀的窗口会误判为「人在看」——宁可少提醒，
+也不要在你盯着屏幕时弹东西。
+
+## 两层提醒
+
+| 层 | 实现 | 说明 |
+|---|---|---|
+| 系统通知 | Windows PowerShell 5.1 + WinRT `ToastNotificationManager` | 默认样式（用户已确认不需要自定义配色）。AUMID 用 `Miracii`，在 `HKCU\Software\Classes\AppUserModelId\Miracii` 写一个 `DisplayName`，通知抬头显示 Miracii 而不是 Windows PowerShell；注册失败则回退到 PowerShell 的 AppID |
+| 浮动弹窗（**默认关闭**） | tkinter（标准库） | 关掉的原因：它和 toast 抢右下角同一块地方，弹出来就被通知盖住，而通知本身已经够明显。代码全部保留，把 `app/notify.py` 的 `POPUP_ENABLED` 改成 `True` 即回来。行为：右下角、置顶、无边框、7 秒自动收起；**点一下把 Miracii 拉到前台**（`focus_app()` 按标题找窗口，再 `ShowWindow` + `SetForegroundWindow`）。多条同时出现时向上堆叠，最多 4 条、纵坐标下限 80px，不会算出屏幕外。配色取 `app.css` 的 `--ink/--panel/--gold/--paper` |
+
+**没有新增依赖**：`ctypes`、`tkinter`、`subprocess` 都是标准库，`requirements.txt` 不变。
+不用页面的 `Notification` API，是因为窗口最小化时页面里的东西看不见——那正是要提醒的时候。
+
+## 开关
+
+`persona/<id>/memory/schedule.txt`：
+
+```text
+notify: on      # 默认。off / no / false / 0 都算关
+```
+
+关掉只影响桌面提醒，`speak` 本身照常写进对话。
+
+浮层另有一个**代码级**开关：`app/notify.py` 的 `POPUP_ENABLED`（默认 `False`）。它和 `notify:`
+管的事不同——`notify: off` 把整条桌面提醒都关掉，`POPUP_ENABLED` 只管那块浮层。关掉它是有意的
+取舍（和通知抢位置），不是每日偏好，所以不放进 `schedule.txt`。
+
+## 怎么测
+
+不必等 30 分钟，也不必真的调模型：
+
+```powershell
+# 只弹这一下，忽略焦点与开关
+python -m app.notify --force "测试：她主动开口时的通知"
+
+# 走完整链路（要 sumapi，会真的生成一句）
+python -m app            # 另一个终端
+python -m app.heartbeat --once idle --force-speak
+```
+
+单元测试（默认不弹任何东西，`MIRACII_NOTIFY_TEST=1` 才做真实弹窗）：
+
+```powershell
+python -m unittest discover -s tests -t .
+```
+
+## 不做的事
+
+- 不把提醒做成独立的常驻进程或托盘图标；它跟着心跳进程活在同一个运行时里
+- 不在 `notify: off` 之外再做「免打扰时段」——安静时段已经由监督那层挡住了
+- 不动 `requirements.txt`，也不要求管理员权限（只写当前用户的注册表键）
+
+## Cursor 复核
+
+系统通知在心跳线程里同步调用 PowerShell（失败会连试两个 AppID，各等最多 15 秒），冷启动或超时会堵住唤醒和下一次 tick；浮层要等这条命令结束才出现。
+浮层在守护线程里跑 tkinter `mainloop`，而 `python -m app` 的心跳与 pywebview 同进程，第二套界面循环有机会把主窗口拖垮；`_popup` 在窗口真正建出来之前就返回成功。
+`notified:` 只在 `fired` 时落日志，焦点静默、开关关闭、两层都失败都没有记录；`proactive` 若抛错，台词已经入库，整条心跳线程却会退出。
+通知会留在操作中心，主动说的话可能一直可见；点浮层只收起，不会把聊天窗口拉到前台。
+多条同时出现时纵坐标会算出屏幕外；接线测试只核对 `heartbeat.notify` 是同一模块，调用被拆掉也仍然通过。
+
+## 第二轮：按复核改了什么
+
+| 复核意见 | 处理 |
+|---|---|
+| 同步调 PowerShell 会堵住 tick，失败还要再等一个 AppID | 改成**一次调用只用一个 AppID**（注册成功就用 `Miracii`，否则直接上回退 ID），超时 15s → 8s，典型 <1s。tick 本身已有 45s×3 的 sumapi 请求，这个量级不改变原有节奏 |
+| `_popup` 在窗口真正建出来之前就返回成功 | 加 `threading.Event` 就绪信号：`deiconify` + `update` 之后才置位，`_popup` 最多等 2s，返回值现在真的代表「已上屏」 |
+| `proactive` 抛错会带走整条心跳线程 | `deliver_speak` 用 try/except 包住调用，`proactive` 内部再逐层兜底（错误进 `toast_error` / `popup_error`）。台词已经入库，提醒失败不该影响巩固 |
+| 点浮层只收起，不拉前台；通知留在操作中心 | 点击改成 `focus_app()` 后再收起。通知留在操作中心是 Windows 自身行为，不干预 |
+| 多条浮层算出屏幕外；接线测试太弱 | 堆叠上限 4 条 + 纵坐标下限 80px；接线测试换成真的调 `deliver_speak`（打桩全部副作用），断言 ping 带着已入库的那句话被调用，且 ping 抛错不外泄 |
+
+验证：`python -m unittest discover -s tests -t .` → 20 项通过（另有 1 项实弹需显式开启）；
+`python -m app.notify --force "…"` → `{"fired": true, "toast": true, "popup": true}`；
+`focus_app()` 在标题为 `Miracii v0.0.1` 的窗口存在时返回 true，之后 `window_focused()` 为 true。
+
+## 第三轮：浮层默认关闭
+
+实测下来浮层没被注意到：它和 Windows 通知挤在右下角同一块地方，弹出来就被盖住。既然通知
+本身已经够显眼，就只留通知。
+
+- `POPUP_ENABLED = False`（`app/notify.py`）。`proactive()` 不再碰浮层，连线程都不起，
+  返回值里也不会出现 `popup` 字段。
+- 浮层代码、点击聚焦 `focus_app()`、堆叠与越界处理、以及相关测试全部保留；测试用
+  `mock.patch.object(notify, "POPUP_ENABLED", True)` 覆盖「开着时」的分支，所以这条路径没有失修。
+- 想恢复：改一个常量。
+
+验证：`python -m unittest discover -s tests -t .` → 22 项通过（另有 1 项实弹需显式开启）；
+`python -m app.notify --force "…"` → `{"fired": true, "toast": true}`，无 `popup` 字段。

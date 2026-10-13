@@ -6,13 +6,13 @@ from pathlib import Path
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import APP_CHANNEL, APP_VERSION, clock, db, files, media, persona
+from . import APP_CHANNEL, APP_VERSION, clock, db, files, media, notices, persona, studio
 from .llm import LlmError, MODEL, stream_reply
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -89,6 +89,7 @@ def _history_payload(sid: str) -> dict:
         "messages": [_public_message(item) for item in db.list_messages(sid)],
         "locked_through_id": lock_id,
         "locked_through_at": lock.get("locked_through_at"),
+        "layers": clock.memory_layers(sid),
         "can_reset": db.count_after(sid, lock_id) > 0,
         "unconsolidated_count": db.count_after(sid, lock_id),
     }
@@ -103,8 +104,8 @@ def _public_message(item: dict) -> dict:
 
 
 def _llm_history(sid: str, current_images: list[dict] | None = None) -> list[dict]:
-    """Older turns stay text. Only the latest user turn may carry image blocks."""
-    rows = db.recent_dialogue(sid, limit=24)
+    """Only the sitting that has not been written to STM. Consolidated lines stay in files."""
+    rows = db.recent_dialogue(sid, limit=24, after_id=_lock_id(sid))
     out: list[dict] = []
     last_user = max((i for i, row in enumerate(rows) if row["role"] == "user"), default=-1)
     for index, row in enumerate(rows):
@@ -130,6 +131,120 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/studio")
+def studio_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "studio.html")
+
+
+class StudioFile(BaseModel):
+    persona: str = Field(..., min_length=1, max_length=64)
+    path: str = Field(..., min_length=1, max_length=240)
+    content: str | None = None
+
+
+class StudioCreate(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64)
+
+
+class StudioHold(BaseModel):
+    persona: str = Field(..., min_length=1, max_length=64)
+    hold: bool = True
+
+
+def _studio_error(exc: Exception) -> HTTPException:
+    status = 404 if isinstance(exc, FileNotFoundError) else 400
+    return HTTPException(status_code=status, detail=str(exc))
+
+
+@app.get("/api/studio/files")
+def studio_files(persona_id: str) -> dict:
+    try:
+        folder = studio.persona_dir(persona_id)
+        name = persona.display_name(persona_id) if folder.is_dir() else persona_id
+        return {
+            "persona": persona_id,
+            "name": name,
+            "hold": clock.is_held(persona_id),
+            "files": studio.list_files(persona_id),
+        }
+    except (ValueError, FileNotFoundError) as exc:
+        raise _studio_error(exc) from exc
+
+
+@app.get("/api/studio/file")
+def studio_read(persona_id: str, path: str) -> dict:
+    try:
+        return {"persona": persona_id, "path": path, "content": studio.read_file(persona_id, path)}
+    except (ValueError, FileNotFoundError) as exc:
+        raise _studio_error(exc) from exc
+
+
+@app.put("/api/studio/file")
+def studio_write(body: StudioFile) -> dict:
+    if body.content is None:
+        raise HTTPException(status_code=400, detail="没有内容")
+    try:
+        studio.write_file(body.persona, body.path, body.content)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _studio_error(exc) from exc
+    return {"ok": True}
+
+
+@app.post("/api/studio/file")
+def studio_new_file(body: StudioFile) -> dict:
+    try:
+        studio.create_file(body.persona, body.path)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _studio_error(exc) from exc
+    return {"ok": True, "path": body.path}
+
+
+@app.post("/api/studio/personas")
+def studio_create(body: StudioCreate) -> dict:
+    try:
+        created = studio.create_persona(body.id)
+        clock.set_hold(created, True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "persona": created, "hold": True}
+
+
+@app.post("/api/studio/hold")
+def studio_hold(body: StudioHold) -> dict:
+    try:
+        studio.persona_dir(body.persona)
+        if not studio.persona_dir(body.persona).is_dir():
+            raise ValueError("没有这个人格")
+        held = clock.set_hold(body.persona, body.hold)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "persona": body.persona, "hold": held}
+
+
+@app.get("/api/studio/export")
+def studio_export(persona_id: str) -> Response:
+    try:
+        payload = studio.export_zip(persona_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(
+        payload,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{persona_id}.zip"'},
+    )
+
+
+@app.post("/api/studio/import")
+async def studio_import(request: Request, persona_id: str, replace: bool = False) -> dict:
+    raw = await request.body()
+    try:
+        created = studio.import_zip(raw, persona_id, replace=replace)
+        clock.set_hold(created, True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "persona": created, "hold": True}
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {"ok": True, "version": APP_VERSION, "channel": APP_CHANNEL}
@@ -147,6 +262,7 @@ def meta() -> dict:
         "personas": persona.list_personas(),
         "version": APP_VERSION,
         "channel": APP_CHANNEL,
+        "hold": clock.is_held(current),
     }
 
 
@@ -162,6 +278,7 @@ def switch_persona(body: PersonaRequest) -> dict:
         "name": persona.display_name(current),
         "session_id": current,
         "personas": persona.list_personas(),
+        "hold": clock.is_held(current),
     }
 
 
@@ -213,8 +330,25 @@ def media_file(persona_id: str, name: str) -> FileResponse:
 
 
 @app.get("/api/files")
-def list_files() -> dict:
-    return {"groups": files.list_readable()}
+def list_files(persona: str | None = None) -> dict:
+    return files.list_readable(persona)
+
+
+@app.get("/api/runtime")
+def runtime_log(persona: str, kind: str = "supervisor") -> dict:
+    try:
+        return files.runtime_view(persona, kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/notices")
+def list_notices(after: int = 0, persona: str | None = None, catchup: int = 0) -> dict:
+    if catchup:
+        data = notices.since(10**9, persona)
+        data["items"] = []
+        return data
+    return notices.since(after, persona)
 
 
 @app.get("/api/files/content")
@@ -235,6 +369,8 @@ async def chat(body: ChatRequest) -> StreamingResponse:
         raise HTTPException(status_code=400, detail="空消息")
 
     sid = _session(body.session_id)
+    if clock.is_held(sid):
+        raise HTTPException(status_code=409, detail="这位正在编辑设定，回复和巩固已暂停。")
     speaker = persona.display_name(sid)
     try:
         saved_images = media.save_images(sid, raw_images) if raw_images else []
@@ -248,10 +384,14 @@ async def chat(body: ChatRequest) -> StreamingResponse:
     files.append_turn(sid, speaker, "user", stored.replace("\n", " "), user_msg["created_at"])
     history = _llm_history(sid, current_images=saved_images)
     scan_bits = []
-    for item in db.recent_dialogue(sid, limit=6):
-        piece, _rels = media.split_content(item["content"])
-        if piece:
-            scan_bits.append(piece)
+    for item in history:
+        content = item.get("content")
+        if isinstance(content, str) and content.strip():
+            scan_bits.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                    scan_bits.append(block["text"])
     system = persona.system_prompt(sid, scan_text="\n".join(scan_bits))
     if saved_images:
         system += "\n\n对方这轮发了图。按你看见的内容说话，不要声称看不见，也不要编造图里没有的东西。"

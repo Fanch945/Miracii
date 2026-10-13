@@ -19,6 +19,8 @@ let lastSeenId = 0;
 const pendingImages = [];
 const MAX_IMAGES = 3;
 
+let liveHost = thread;
+
 function hideEmpty() {
   document.getElementById("empty-hint")?.remove();
 }
@@ -44,8 +46,9 @@ function formatTime(iso) {
   });
 }
 
-function addRow(role, content, createdAt, pending = false, images = []) {
+function addRow(role, content, createdAt, pending = false, images = [], parent = null) {
   hideEmpty();
+  const host = parent || liveHost || thread;
   const row = document.createElement("article");
   row.className = `row ${role}`;
   const bubble = document.createElement("div");
@@ -69,7 +72,7 @@ function addRow(role, content, createdAt, pending = false, images = []) {
   time.className = "time";
   time.textContent = formatTime(createdAt);
   row.append(bubble, time);
-  thread.append(row);
+  host.append(row);
   thread.scrollTop = thread.scrollHeight;
   return { row, bubble, body, time };
 }
@@ -86,6 +89,13 @@ function applyMeta(data) {
   const ver = data.version ? ` · v${data.version}` : "";
   statusEl.textContent = `${tag} · ${data.model}${ver}`;
   document.title = data.name;
+  window.MiraciiDock?.setPersona(sessionId, data.name);
+  const holdBar = document.getElementById("hold-bar");
+  if (holdBar) {
+    holdBar.hidden = !data.hold;
+    const edit = document.getElementById("hold-edit");
+    if (edit) edit.href = `/studio?persona=${encodeURIComponent(sessionId)}`;
+  }
   personaSelect.replaceChildren();
   for (const item of data.personas || []) {
     const option = document.createElement("option");
@@ -112,16 +122,118 @@ function applyHistoryMeta(data) {
   }
 }
 
+const LAYER_LABEL = {
+  daily: "已收进长期",
+  impression: "已写成印象",
+  stm: "短期记忆",
+  live: "正在聊",
+};
+
+function dayKey(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+}
+
+function dayLabel(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
+}
+
+function layerOf(message, layers) {
+  const id = Number(message.id);
+  if (!Number.isFinite(id)) return "live";
+  if (layers.daily != null && id <= layers.daily) return "daily";
+  if (layers.impression != null && id <= layers.impression) return "impression";
+  if (layers.stm != null && id <= layers.stm) return "stm";
+  return "live";
+}
+
+function groupBy(items, keyFn) {
+  const groups = [];
+  for (const item of items) {
+    const key = keyFn(item);
+    const last = groups[groups.length - 1];
+    if (!last || last.key !== key) groups.push({ key, items: [item] });
+    else last.items.push(item);
+  }
+  return groups;
+}
+
+function makeFold(className, summaryText, open) {
+  const details = document.createElement("details");
+  details.className = className;
+  if (open) details.open = true;
+  const summary = document.createElement("summary");
+  summary.textContent = summaryText;
+  const body = document.createElement("div");
+  body.className = "layer-body";
+  details.append(summary, body);
+  return { details, body };
+}
+
+function fillRows(parent, messages) {
+  for (const message of messages) {
+    addRow(message.role, message.content, message.created_at, false, message.images || [], parent);
+    if (message.id) lastSeenId = Math.max(lastSeenId, message.id);
+  }
+}
+
 async function loadHistory() {
   resetThread("还没有话。从下面那一行开始。");
   lastSeenId = 0;
+  liveHost = thread;
   const res = await fetch(`/api/history?session_id=${encodeURIComponent(sessionId)}`);
   const data = await res.json();
   applyHistoryMeta(data);
-  for (const message of data.messages || []) {
-    addRow(message.role, message.content, message.created_at, false, message.images || []);
-    if (message.id) lastSeenId = Math.max(lastSeenId, message.id);
-  }
+  const messages = data.messages || [];
+  if (!messages.length) return;
+  hideEmpty();
+  const layers = data.layers || {};
+  const bands = groupBy(messages, (message) => layerOf(message, layers));
+  bands.forEach((band, index) => {
+    const isLast = index === bands.length - 1;
+    const label = LAYER_LABEL[band.key] || band.key;
+    if (band.key === "live") {
+      if (index > 0) {
+        const rule = document.createElement("div");
+        rule.className = "layer-rule live";
+        rule.textContent = label;
+        thread.append(rule);
+      }
+      const host = document.createElement("div");
+      host.className = "live-band";
+      thread.append(host);
+      liveHost = host;
+      fillRows(host, band.items);
+      return;
+    }
+    const days = groupBy(band.items, (message) => dayKey(message.created_at));
+    if (days.length <= 1) {
+      const when = dayLabel(band.items[0].created_at);
+      const fold = makeFold(
+        `layer ${band.key}`,
+        `${label}${when ? ` · ${when}` : ""} · ${band.items.length} 句`,
+        isLast,
+      );
+      fillRows(fold.body, band.items);
+      thread.append(fold.details);
+      return;
+    }
+    const fold = makeFold(`layer ${band.key}`, `${label} · ${band.items.length} 句`, isLast);
+    days.forEach((day, dayIndex) => {
+      const when = dayLabel(day.items[0].created_at);
+      const nested = makeFold(
+        "day-fold",
+        `${when || "更早"} · ${day.items.length} 句`,
+        isLast && dayIndex === days.length - 1,
+      );
+      fillRows(nested.body, day.items);
+      fold.body.append(nested.details);
+    });
+    thread.append(fold.details);
+  });
   thread.scrollTop = thread.scrollHeight;
 }
 
@@ -185,7 +297,8 @@ async function sendMessage(text, images) {
       }),
     });
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
     }
     let assembled = "";
     await readSse(res, {
@@ -277,6 +390,18 @@ clearBtn.addEventListener("click", async () => {
 
 refreshBtn.addEventListener("click", () => refreshChat());
 
+document.getElementById("studio-btn").addEventListener("click", () => {
+  location.href = `/studio?persona=${encodeURIComponent(sessionId)}`;
+});
+document.getElementById("hold-resume").addEventListener("click", async () => {
+  await fetch("/api/studio/hold", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ persona: sessionId, hold: false }),
+  });
+  await loadMeta();
+});
+
 personaSelect.addEventListener("change", async () => {
   const res = await fetch("/api/persona", {
     method: "POST",
@@ -291,7 +416,10 @@ personaSelect.addEventListener("change", async () => {
 
 loadMeta()
   .then(loadHistory)
-  .then(() => input.focus())
+  .then(() => {
+    input.focus();
+    pollNotices();
+  })
   .catch((err) => {
     statusEl.textContent = err.message || "无法连接本地服务";
   });
@@ -418,8 +546,51 @@ async function pollInbox() {
   }
 }
 
+const toasts = document.getElementById("toasts");
+let noticeCursor = null;
+
+function showToast(item) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "toast";
+  button.innerHTML = "";
+  const line = document.createElement("span");
+  line.textContent = item.text || "巩固完成";
+  const sub = document.createElement("small");
+  sub.textContent = "点开这位的监督记录";
+  button.append(line, sub);
+  button.addEventListener("click", () => {
+    button.remove();
+    window.MiraciiDock?.showRuntime();
+  });
+  toasts.append(button);
+  setTimeout(() => button.remove(), 7000);
+}
+
+async function pollNotices() {
+  if (!sessionId) return;
+  try {
+    const boot = noticeCursor === null;
+    const query = boot
+      ? `catchup=1&persona=${encodeURIComponent(sessionId)}`
+      : `after=${noticeCursor}&persona=${encodeURIComponent(sessionId)}`;
+    const res = await fetch(`/api/notices?${query}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    noticeCursor = data.after ?? noticeCursor ?? 0;
+    if (boot) return;
+    for (const item of data.items || []) showToast(item);
+  } catch {
+    /* offline */
+  }
+}
+
 setInterval(pollInbox, 3000);
+setInterval(pollNotices, 3000);
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) scheduleRefresh();
+  if (!document.hidden) {
+    scheduleRefresh();
+    pollNotices();
+  }
 });
 window.addEventListener("focus", scheduleRefresh);

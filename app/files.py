@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -193,68 +194,205 @@ def _under(path: Path, root: Path) -> bool:
         return False
 
 
-def list_readable() -> list[dict]:
-    _ensure()
-    groups = [
-        {"id": "log", "label": "日志", "files": []},
-        {"id": "transcript", "label": "对话原文", "files": []},
-        {"id": "memory", "label": "记忆", "files": []},
-        {"id": "lore", "label": "设定", "files": []},
-        {"id": "persona", "label": "人设", "files": []},
-    ]
-    by_id = {group["id"]: group for group in groups}
+_DATE_IN_NAME = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
-    if KEEPER_LOG.exists():
-        by_id["log"]["files"].append(_item("log/keeper.log", KEEPER_LOG, "log", "保存记录"))
-    heartbeat_log = DATA_DIR / "heartbeat.log"
-    if heartbeat_log.exists():
-        by_id["log"]["files"].append(_item("log/heartbeat.log", heartbeat_log, "log", "心跳"))
-    supervisor_log = DATA_DIR / "supervisor.jsonl"
-    if supervisor_log.exists():
-        by_id["log"]["files"].append(
-            _item("log/supervisor.jsonl", supervisor_log, "log", "监督输入输出")
+
+_PERSONA_ORDER = (
+    "profile.txt",
+    "voice_lines.txt",
+    "examples.txt",
+    "forbidden_style.txt",
+    "source.txt",
+)
+
+
+def _chrono(item: dict) -> tuple:
+    if item.get("group") == "persona":
+        try:
+            rank = _PERSONA_ORDER.index(item["name"])
+        except ValueError:
+            rank = 99
+        return (0, f"{rank:02d}", item["rel"])
+    found = _DATE_IN_NAME.search(item["rel"])
+    if found:
+        return (0, found.group(1), item["rel"])
+    return (1, item.get("mtime") or "", item["rel"])
+
+
+def _persona_label(persona_id: str) -> str:
+    if persona_id == "_template":
+        return "模版"
+    profile = PERSONA_DIR / persona_id / "profile.txt"
+    if profile.is_file():
+        for line in profile.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("名字：") or line.startswith("名字:"):
+                name = line.split("：", 1)[-1].split(":", 1)[-1].strip()
+                if name:
+                    return name
+    return persona_id
+
+
+def _sorted(items: list[dict]) -> list[dict]:
+    return sorted(items, key=_chrono)
+
+
+def list_readable(only: str | None = None) -> dict:
+    """Dock catalog. `only` keeps a single persona; other people stay out of the tree."""
+    _ensure()
+    from .persona import active_id
+
+    buckets: dict[str, dict[str, list[dict]]] = {}
+
+    def bucket(persona_id: str) -> dict[str, list[dict]]:
+        return buckets.setdefault(
+            persona_id,
+            {"transcript": [], "memory": [], "lore": [], "persona": []},
         )
 
     if TRANSCRIPT_DIR.exists():
-        for path in sorted(TRANSCRIPT_DIR.rglob("*")):
-            if path.suffix.lower() in READABLE_SUFFIX and path.is_file():
-                rel = path.relative_to(TRANSCRIPT_DIR).as_posix()
-                by_id["transcript"]["files"].append(_item(f"transcript/{rel}", path, "transcript"))
+        for path in TRANSCRIPT_DIR.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in READABLE_SUFFIX:
+                continue
+            if path.suffix.lower() == ".jsonl" and path.with_suffix(".txt").is_file():
+                continue
+            rel = path.relative_to(TRANSCRIPT_DIR)
+            persona_id = rel.parts[0] if len(rel.parts) > 1 else "unknown"
+            title = path.stem if _DATE_IN_NAME.search(path.name) else path.name
+            bucket(persona_id)["transcript"].append(
+                _item(f"transcript/{rel.as_posix()}", path, "transcript", title)
+            )
 
     if PERSONA_DIR.exists():
-        for persona_path in sorted(PERSONA_DIR.iterdir()):
+        for persona_path in PERSONA_DIR.iterdir():
             if not persona_path.is_dir() or persona_path.name.startswith("."):
                 continue
-            for name in sorted(MEMORY_FILENAMES):
+            pid = persona_path.name
+            for name in MEMORY_FILENAMES:
                 path = persona_path / "secondary" / name
                 if path.is_file():
-                    file_id = f"memory/{persona_path.name}/secondary/{name}"
-                    title = f"{persona_path.name} / secondary/{name}"
-                    by_id["memory"]["files"].append(_item(file_id, path, "memory", title))
+                    bucket(pid)["memory"].append(
+                        _item(f"memory/{pid}/secondary/{name}", path, "memory", f"secondary/{name}")
+                    )
             mem_root = persona_path / "memory"
             if mem_root.is_dir():
-                for path in sorted(mem_root.rglob("*")):
-                    if path.suffix.lower() in READABLE_SUFFIX and path.is_file():
-                        rel = path.relative_to(mem_root).as_posix()
-                        file_id = f"memory/{persona_path.name}/{rel}"
-                        title = f"{persona_path.name} / {rel}"
-                        by_id["memory"]["files"].append(_item(file_id, path, "memory", title))
-            for name in sorted(PERSONA_FILENAMES):
+                for path in mem_root.rglob("*"):
+                    if path.suffix.lower() not in READABLE_SUFFIX or not path.is_file():
+                        continue
+                    rel = path.relative_to(mem_root).as_posix()
+                    bucket(pid)["memory"].append(
+                        _item(f"memory/{pid}/{rel}", path, "memory", rel)
+                    )
+            for name in PERSONA_FILENAMES:
                 path = persona_path / name
                 if path.is_file():
-                    file_id = f"persona/{persona_path.name}/{name}"
-                    title = f"{persona_path.name} / {name}"
-                    by_id["persona"]["files"].append(_item(file_id, path, "persona", title))
+                    bucket(pid)["persona"].append(
+                        _item(f"persona/{pid}/{name}", path, "persona", name)
+                    )
             lore_root = persona_path / "lore"
             if lore_root.is_dir():
-                for path in sorted(lore_root.rglob("*.txt")):
-                    if not path.is_file():
+                for path in lore_root.rglob("*.txt"):
+                    if not path.is_file() or path.name == "notes.txt":
                         continue
                     rel = path.relative_to(lore_root).as_posix()
-                    file_id = f"lore/{persona_path.name}/{rel}"
-                    title = f"{persona_path.name} / {rel}"
-                    by_id["lore"]["files"].append(_item(file_id, path, "lore", title))
-    return groups
+                    bucket(pid)["lore"].append(_item(f"lore/{pid}/{rel}", path, "lore", rel))
+
+    current = active_id()
+    section_labels = (
+        ("transcript", "对话"),
+        ("memory", "记忆"),
+        ("lore", "设定"),
+        ("persona", "人设"),
+    )
+    personas = []
+    ordered_ids = sorted(
+        buckets,
+        key=lambda pid: (pid == "_template", pid != current, _persona_label(pid)),
+    )
+    for pid in ordered_ids:
+        sections = []
+        for key, label in section_labels:
+            files = _sorted(buckets[pid][key])
+            if files:
+                sections.append({"id": key, "label": label, "files": files})
+        if sections:
+            personas.append({"id": pid, "name": _persona_label(pid), "sections": sections})
+    if only:
+        personas = [item for item in personas if item["id"] == only]
+
+    logs = []
+    named_logs = (
+        (DATA_DIR / "heartbeat.log", "log/heartbeat.log", "心跳"),
+        (DATA_DIR / "supervisor.jsonl", "log/supervisor.jsonl", "监督"),
+        (KEEPER_LOG, "log/keeper.log", "保存记录"),
+    )
+    for path, file_id, title in named_logs:
+        if path.is_file():
+            logs.append(_item(file_id, path, "log", title))
+
+    return {"personas": personas, "logs": logs, "persona": only}
+
+
+def runtime_view(persona_id: str, kind: str) -> dict:
+    """One persona's slice of the shared runtime logs.
+
+    supervisor.jsonl and heartbeat.log are still one file for every persona.
+    This view only returns lines that name the requested persona.
+    """
+    persona_id = (persona_id or "").strip()
+    if not persona_id or "/" in persona_id or "\\" in persona_id:
+        raise ValueError("无效人格")
+    kind = (kind or "").strip()
+    if kind == "supervisor":
+        path = DATA_DIR / "supervisor.jsonl"
+        kept = _filter_supervisor(path, persona_id)
+        title = "监督"
+    elif kind == "heartbeat":
+        path = DATA_DIR / "heartbeat.log"
+        kept = _filter_heartbeat(path, persona_id)
+        title = "心跳"
+    else:
+        raise ValueError("无效日志")
+    text = "\n".join(kept).strip()
+    return {
+        "persona": persona_id,
+        "kind": kind,
+        "title": title,
+        "shared": True,
+        "content": text or "（这位还没有记录）",
+    }
+
+
+def _filter_supervisor(path: Path, persona_id: str) -> list[str]:
+    if not path.is_file():
+        return []
+    kept: list[str] = []
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            if persona_id in line:
+                kept.append(line)
+            continue
+        owner = row.get("persona_id") or (row.get("packet") or {}).get("persona_id")
+        if owner == persona_id:
+            kept.append(line)
+    return kept
+
+
+def _filter_heartbeat(path: Path, persona_id: str) -> list[str]:
+    if not path.is_file():
+        return []
+    kept: list[str] = []
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if f'"persona": "{persona_id}"' in line or f"persona={persona_id}" in line or f'"persona_id": "{persona_id}"' in line:
+            kept.append(line)
+    return kept
 
 
 def resolve_readable(file_id: str) -> Path:

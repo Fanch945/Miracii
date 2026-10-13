@@ -22,7 +22,7 @@ def _now() -> datetime:
     return datetime.now().astimezone()
 
 
-def _load() -> dict:
+def _read_raw() -> dict:
     if not STATE_PATH.exists():
         return {}
     try:
@@ -31,9 +31,36 @@ def _load() -> dict:
         return {}
 
 
-def _save(state: dict) -> None:
+def _book(raw: dict | None = None) -> dict:
+    """One clock slice per persona. A legacy flat file belongs to its persona_id."""
+    raw = _read_raw() if raw is None else raw
+    personas = raw.get("personas")
+    if isinstance(personas, dict):
+        return {"personas": personas}
+    if not raw:
+        return {"personas": {}}
+    pid = str(raw.get("persona_id") or "miracii")
+    return {"personas": {pid: raw}}
+
+
+def _write_book(book: dict) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    STATE_PATH.write_text(json.dumps({"personas": book.get("personas") or {}}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load(persona_id: str) -> dict:
+    state = dict(_book()["personas"].get(persona_id) or {})
+    state["persona_id"] = persona_id
+    return state
+
+
+def _save(state: dict) -> None:
+    pid = state.get("persona_id")
+    if not pid:
+        raise ValueError("clock state missing persona_id")
+    book = _book()
+    book["personas"][str(pid)] = state
+    _write_book(book)
 
 
 def _parse(iso: str | None) -> datetime | None:
@@ -50,7 +77,7 @@ def on_chat(persona_id: str) -> dict:
     now = _now()
     sched = parse_schedule(persona_id)
     stm_min = int(sched.get("stm_minutes") or 5)
-    state = _load()
+    state = _load(persona_id)
     state.update(
         {
             "persona_id": persona_id,
@@ -67,19 +94,42 @@ def on_chat(persona_id: str) -> dict:
     return state
 
 
+def is_held(persona_id: str) -> bool:
+    return bool(_load(persona_id).get("hold"))
+
+
+def set_hold(persona_id: str, held: bool) -> bool:
+    """Pause consolidation and replies while this persona's files are being edited."""
+    state = _load(persona_id)
+    if held:
+        state["hold"] = True
+        state["hold_at"] = _now().isoformat(timespec="seconds")
+    else:
+        state.pop("hold", None)
+        state.pop("hold_at", None)
+    _save(state)
+    if not held:
+        wake_ping()
+    return bool(held)
+
+
 def snapshot() -> dict:
-    return dict(_load())
+    return _book()
 
 
 def restore(state: dict) -> None:
-    _save(state)
+    if isinstance(state, dict) and isinstance(state.get("personas"), dict):
+        _write_book(state)
+        return
+    if state.get("persona_id"):
+        _save(state)
 
 
 def live_window(persona_id: str, now: datetime | None = None) -> bool:
     """True while the current chat's 5-minute STM window is still open."""
     now = now or _now()
     sched = parse_schedule(persona_id)
-    state = _load()
+    state = _load(persona_id)
     last_chat = _parse(state.get("last_chat_at"))
     if not last_chat:
         return False
@@ -116,7 +166,7 @@ def missed_weekly(now: datetime, last_weekly: str | None) -> bool:
 
 def phase_is_late(persona_id: str, phase: str) -> bool:
     now = _now()
-    state = _load()
+    state = _load(persona_id)
     if phase == "stm":
         due = _parse(state.get("stm_due_at"))
         return bool(due and now - due > timedelta(minutes=1))
@@ -133,7 +183,9 @@ def phase_is_late(persona_id: str, phase: str) -> bool:
 def next_deadline(persona_id: str) -> datetime:
     """Earliest time due_phase might change. Chat UDP can wake sooner."""
     now = _now()
-    state = _load()
+    state = _load(persona_id)
+    if state.get("hold"):
+        return now + timedelta(seconds=30)
     candidates: list[datetime] = []
     stm_due = _parse(state.get("stm_due_at"))
     if stm_due and not state.get("stm_done"):
@@ -169,7 +221,9 @@ def due_phase(persona_id: str) -> str | None:
     """What the heartbeat should run now. None = sleep until next_deadline or a chat ping."""
     now = _now()
     sched = parse_schedule(persona_id)
-    state = _load()
+    state = _load(persona_id)
+    if state.get("hold"):
+        return None
     last_chat = _parse(state.get("last_chat_at"))
     stm_due = _parse(state.get("stm_due_at"))
     stm_done = bool(state.get("stm_done"))
@@ -201,7 +255,7 @@ def mark_fired(
 ) -> None:
     now = _now()
     sched = parse_schedule(persona_id)
-    state = _load()
+    state = _load(persona_id)
     state["persona_id"] = persona_id
     state.pop("tick_in_progress", None)
     if phase == "stm":
@@ -224,26 +278,30 @@ def mark_fired(
         state["last_routine_at"] = now.isoformat(timespec="seconds")
         state["routine_done"] = True
         state.pop("routine_due_at", None)
+        if through_id is not None:
+            state["impression_through_id"] = through_id
     elif phase == "daily":
         if catch_up and now.hour < 23:
             state["last_daily"] = (now.date() - timedelta(days=1)).isoformat()
         else:
             state["last_daily"] = now.date().isoformat()
+        if through_id is not None:
+            state["daily_through_id"] = through_id
     elif phase == "weekly":
         state["last_weekly"] = now.strftime("%G-W%V")
     _save(state)
 
 
-def speak_count_today() -> int:
-    state = _load()
+def speak_count_today(persona_id: str) -> int:
+    state = _load(persona_id)
     today = _now().date().isoformat()
     if state.get("speak_date") != today:
         return 0
     return int(state.get("speak_count") or 0)
 
 
-def note_speak() -> int:
-    state = _load()
+def note_speak(persona_id: str) -> int:
+    state = _load(persona_id)
     today = _now().date().isoformat()
     if state.get("speak_date") != today:
         state["speak_date"] = today
@@ -254,22 +312,49 @@ def note_speak() -> int:
 
 
 def begin_tick(persona_id: str, phase: str) -> None:
-    state = _load()
+    state = _load(persona_id)
     state["persona_id"] = persona_id
     state["tick_in_progress"] = phase
     _save(state)
 
 
 def unfinished_tick(persona_id: str) -> str | None:
-    state = _load()
+    state = _load(persona_id)
     if state.get("persona_id") not in {None, persona_id}:
         return None
     phase = state.get("tick_in_progress")
     return phase if phase in {"stm", "routine", "daily", "weekly"} else None
 
 
+def memory_layers(persona_id: str) -> dict:
+    """Message ids folded into stm / impression / daily. Missing cursors are inferred once."""
+    state = _load(persona_id)
+    if state.get("persona_id") not in {None, persona_id}:
+        return {"stm": None, "impression": None, "daily": None}
+    stm = state.get("consolidated_through_id")
+    impression = state.get("impression_through_id")
+    daily = state.get("daily_through_id")
+    lock_at = _parse(state.get("consolidated_through_at"))
+    if stm is not None and impression is None:
+        routine_at = _parse(state.get("last_routine_at"))
+        if state.get("routine_done") or (routine_at and lock_at and routine_at >= lock_at):
+            impression = stm
+    if daily is None and state.get("last_daily") and (impression or stm) is not None:
+        try:
+            last_daily = datetime.strptime(state["last_daily"], "%Y-%m-%d").date()
+        except ValueError:
+            last_daily = None
+        if last_daily and lock_at and lock_at.date() <= last_daily:
+            daily = impression if impression is not None else stm
+
+    def _int(value):
+        return int(value) if value is not None else None
+
+    return {"stm": _int(stm), "impression": _int(impression), "daily": _int(daily)}
+
+
 def lock_status(persona_id: str) -> dict:
-    state = _load()
+    state = _load(persona_id)
     return {
         "locked_through_id": state.get("consolidated_through_id"),
         "locked_through_at": state.get("consolidated_through_at") or state.get("last_stm_at"),
@@ -280,7 +365,7 @@ def lock_status(persona_id: str) -> dict:
 
 def after_rewind(persona_id: str) -> None:
     """Unconsolidated tail removed: close the live window, keep the STM lock."""
-    state = _load()
+    state = _load(persona_id)
     lock_at = state.get("consolidated_through_at") or state.get("last_stm_at")
     state["persona_id"] = persona_id
     state["in_conversation"] = False
@@ -300,6 +385,57 @@ def last_transcript_excerpt(persona_id: str, n: int = 8) -> str:
         return ""
     lines = files[-1].read_text(encoding="utf-8", errors="replace").splitlines()
     return "\n".join(lines[-n:]).strip()
+
+
+def _memory_source_fp(persona_id: str) -> str:
+    from .supervisor import impression_corpus
+
+    parts: list[str] = []
+    working = persona.folder(persona_id) / "memory" / "working.txt"
+    if working.exists():
+        parts.append(working.read_text(encoding="utf-8", errors="replace"))
+    parts.append(impression_corpus(persona_id))
+    return _fingerprint("\n".join(parts))
+
+
+def learn_source_duplicate(persona_id: str, phase: str) -> bool:
+    fp = _memory_source_fp(persona_id)
+    if not fp:
+        return False
+    state = _load(persona_id)
+    key = "last_daily_fp" if phase == "daily" else "last_weekly_fp"
+    return fp == state.get(key)
+
+
+def mark_learn_source(persona_id: str, phase: str) -> None:
+    fp = _memory_source_fp(persona_id)
+    if not fp:
+        return
+    state = _load(persona_id)
+    key = "last_daily_fp" if phase == "daily" else "last_weekly_fp"
+    state[key] = fp
+    _save(state)
+
+
+def write_daily_episode(persona_id: str, *, catch_up: bool = False) -> bool:
+    """One day, one episodic file, copied from that day's impression sittings."""
+    now = _now()
+    day = now.date() - timedelta(days=1) if catch_up and now.hour < 23 else now.date()
+    base = persona.folder(persona_id) / "memory"
+    src = base / "impression" / f"{day.isoformat()}.txt"
+    if not src.exists():
+        return False
+    body = src.read_text(encoding="utf-8", errors="replace").strip()
+    if not body:
+        return False
+    dest_dir = base / "episodic"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{day.isoformat()}.txt"
+    text = f"# episodic {day.isoformat()}\n{body}\n"
+    if dest.exists() and dest.read_text(encoding="utf-8", errors="replace") == text:
+        return False
+    dest.write_text(text, encoding="utf-8")
+    return True
 
 
 def _fingerprint(text: str) -> str:
@@ -483,7 +619,7 @@ def apply_consolidation(persona_id: str, phase: str, decision: dict) -> dict:
     if phase == "stm":
         base.mkdir(parents=True, exist_ok=True)
         fp = _fingerprint(excerpt)
-        state = _load()
+        state = _load(persona_id)
         if fp and fp == state.get("last_stm_fp"):
             applied["mode"] = "duplicate"
             return applied
@@ -512,7 +648,7 @@ def apply_consolidation(persona_id: str, phase: str, decision: dict) -> dict:
         if not body:
             return applied
         fp = _fingerprint(source)
-        state = _load()
+        state = _load(persona_id)
         if fp and fp == state.get("last_impression_fp"):
             applied["mode"] = "duplicate"
             return applied

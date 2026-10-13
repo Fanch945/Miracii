@@ -88,18 +88,17 @@ def list_messages(session_id: str, limit: int = 200) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def recent_dialogue(session_id: str, limit: int = 24) -> list[dict]:
+def recent_dialogue(session_id: str, limit: int = 24, after_id: int | None = None) -> list[dict]:
+    """Newest turns. after_id keeps only lines not yet folded into STM."""
+    sql = "SELECT role, content FROM messages WHERE session_id = ?"
+    params: list = [session_id]
+    if after_id is not None:
+        sql += " AND id > ?"
+        params.append(after_id)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
     with connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT role, content
-            FROM messages
-            WHERE session_id = ?
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (session_id, limit),
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
 
 

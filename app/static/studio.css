@@ -1,0 +1,151 @@
+.studio {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.studio-bar,
+.studio-actions,
+.studio-create {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.studio-bar {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.studio-bar h1 {
+  font-size: 1.15rem;
+}
+
+.studio-actions {
+  margin-left: auto;
+}
+
+.studio-body {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+}
+
+.studio-side {
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid var(--line);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.studio-create input,
+#editor {
+  background: var(--panel);
+  color: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font: inherit;
+}
+
+.studio-create input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  font-size: 0.82rem;
+}
+
+.studio-files {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.studio-group {
+  margin: 10px 0 4px;
+  color: var(--gold-dim);
+  letter-spacing: 0.12em;
+  font-size: 0.74rem;
+}
+
+.studio-file {
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--paper);
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 5px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.studio-file.active {
+  background: var(--panel);
+  color: var(--gold);
+}
+
+.studio-editor {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+#editor {
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: 0;
+  border-radius: 0;
+  padding: 16px 18px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+
+#editor:focus {
+  outline: none;
+}
+
+.file-btn {
+  cursor: pointer;
+}
+
+.hold-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border: 1px solid var(--gold-dim);
+  border-radius: 12px;
+  color: var(--paper);
+  font-size: 0.82rem;
+}
+
+.hold-bar[hidden] {
+  display: none;
+}
+
+.hold-bar a {
+  color: var(--gold);
+}
+
+@media (max-width: 720px) {
+  .studio-bar,
+  .studio-actions {
+    flex-wrap: wrap;
+  }
+
+  .studio-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(140px, 32%) minmax(0, 1fr);
+  }
+
+  .studio-side {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}

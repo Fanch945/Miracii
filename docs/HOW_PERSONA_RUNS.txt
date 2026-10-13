@@ -61,10 +61,11 @@ SYNAPSE (2026, spreading activation)
 
 流程：
   原文落盘 transcripts
-  → 监督 tick 或会话结束时抽出 claim
-  → 写入 memory/learn_queue/pending.jsonl
-  → 你确认，或以后用规则自动采纳高置信、低风险条目
-  → 事件进 episodic/；稳定事实进 semantic/；作者设定才进 lore/
+  → 监督 tick 或会话结束时抽出 claim（daily/weekly；routine 不入队）
+  → 人称按 profile `名字` / `对方`：你/他=对方，她=人格
+  → 高置信 fact/event 写入 semantic 或 calendar.txt
+  → pattern / 低置信 / 改 lore 的条目才进 memory/learn_queue/pending.jsonl
+  → 作者设定仍须确认后才进 lore/
 
 风险条目（改关系、改禁忌、改身份）永远只进候审。
 
@@ -74,10 +75,13 @@ system =
   身份四件套
   + lore/always（短）
   + memory/working（短）
+  + 命中的 semantic 事实（keys / 人名 / 近因）
+  + 对方在问「那次」时：命中的 impression / episodic
   + 命中的 lore entries（词条按话题 keys；细稿还要意图词或独有情节词）
-  + 仅当这轮问到几点/日期/日历时：本机此刻 + calendar.txt（skills/clock，不每轮塞）
-  + learn 已采纳的少量事实
-user/assistant = 最近 N 轮原文（仅 sqlite 里还在的；已巩固的句子不能从网页退回）
+  + 仅当这轮问到几点/日期/今晚明天/日历时：本机此刻 + calendar.txt（skills/clock，不每轮塞）
+user/assistant = 尚未 stm 的这几句原文（sqlite 里 id 大于 consolidated_through_id）。没有时间戳。
+已巩固的句子仍留在网页上，但不能退回，也不再发给说话模型。
+更早的事靠 working 里还没结案的 stm，或按 keys 取出的 semantic / impression。
 
 监督模型不进这条说话链。它读 log + 时间 + 日程 + 近段原文，只输出 JSON：是否开口、是否压缩、印象段落、是否排队新知识。每次调用的输入输出在 `data/supervisor.jsonl`。
 

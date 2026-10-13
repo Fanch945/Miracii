@@ -56,4 +56,4 @@ stm/routine 即使没有 sumapi 也会做文件级巩固。番茄钟只出现在
 监督 `speak=true` 时，心跳会让说话模型生成一两句并写入对话；页面轮询 `/api/inbox`。安静时段、quota、正在聊会挡住。测试：`python -m app.heartbeat --once idle --force-speak`。
 监督 API 网络错误会重试再 fallback。已经 stm 的对话不能从网页退回。
 每次监督调用会把输入 packet 和输出 decision 写入 `data/supervisor.jsonl`（控制台 → 日志 → 监督输入输出）。
-daily/weekly 只在模型给出真实 `learn` 条目时入队，不再写空的「尚未写入设定」占位。
+daily/weekly 只在模型给出真实 `learn` 条目时采纳。高置信 fact/event 写入 semantic 与 calendar；stm/routine 的 learn 丢弃。同一印象指纹不重复抽。

@@ -7,7 +7,7 @@ import socket
 import time
 from datetime import datetime
 
-from . import clock, db, files, persona, supervisor, wake
+from . import clock, db, files, notices, notify, persona, supervisor, wake
 from .files import DATA_DIR
 from .keys import load_keys
 
@@ -47,7 +47,7 @@ def _ask_sumapi(skill: str, packet: dict, key, *, attempts: int = 3) -> dict:
         "model": "deepseek-v4-flash",
         "messages": messages,
         "temperature": 0.2,
-        "max_tokens": 900,
+        "max_tokens": 1100,
         "thinking": {"type": "disabled"},
     }
     headers = {"Authorization": f"Bearer {key.secret}", "Content-Type": "application/json"}
@@ -108,8 +108,19 @@ def tick_once(persona_id: str | None = None, phase: str = "idle") -> dict:
     applied: dict = {}
     if phase in {"stm", "routine", "daily", "weekly"}:
         applied = clock.apply_consolidation(pid, phase, decision)
-    supervisor.apply_decision(pid, decision)
-    through_id = db.max_message_id(pid) if phase == "stm" else None
+    if phase in {"daily", "weekly"}:
+        if source != "sumapi":
+            applied["learn_mode"] = source
+        elif clock.learn_source_duplicate(pid, phase):
+            applied["learn_mode"] = "duplicate-source"
+        else:
+            applied.update(supervisor.apply_decision(pid, decision, phase=phase))
+            clock.mark_learn_source(pid, phase)
+    else:
+        applied.update(supervisor.apply_decision(pid, decision, phase=phase))
+    if phase == "daily":
+        applied["episodic"] = clock.write_daily_episode(pid, catch_up=catch_up)
+    through_id = db.max_message_id(pid) if phase in {"stm", "routine", "daily"} else None
     through_at = db.max_created_at(pid) if phase == "stm" else None
     clock.mark_fired(pid, phase, catch_up=catch_up, through_id=through_id, through_at=through_at)
     supervisor.log_io(packet, decision, source=source, applied=applied, error=error, raw=raw)
@@ -132,6 +143,9 @@ def tick_once(persona_id: str | None = None, phase: str = "idle") -> dict:
             ensure_ascii=False,
         )
     )
+    if phase in {"stm", "routine", "daily", "weekly"}:
+        wrote = bool(applied.get("stm") or applied.get("impression") or applied.get("episodic") or applied.get("facts"))
+        notices.push(pid, phase, wrote=wrote)
     if decision.get("speak"):
         uttered = deliver_speak(pid, decision, packet, force=False)
         if uttered:
@@ -144,13 +158,15 @@ def tick_once(persona_id: str | None = None, phase: str = "idle") -> dict:
 def _may_speak(packet: dict, *, force: bool) -> str | None:
     if force:
         return None
+    if clock.is_held(packet.get("persona_id") or persona.active_id()):
+        return "hold"
     if packet.get("quiet_now"):
         return "quiet"
     if clock.live_window(packet.get("persona_id") or persona.active_id()):
         return "live-chat"
     sched = packet.get("schedule") or {}
     quota = int(sched.get("quota_speak_per_day") or 3)
-    if clock.speak_count_today() >= quota:
+    if clock.speak_count_today(packet.get("persona_id") or persona.active_id()) >= quota:
         return "quota"
     return None
 
@@ -185,7 +201,13 @@ def deliver_speak(persona_id: str, decision: dict, packet: dict, *, force: bool 
     speaker = persona.display_name(persona_id)
     saved = db.add_message(persona_id, "assistant", text)
     files.append_turn(persona_id, speaker, "assistant", text, saved["created_at"])
-    clock.note_speak()
+    clock.note_speak(persona_id)
+    try:
+        ping = notify.proactive(persona_id, speaker, text)
+    except Exception as exc:  # the line is already saved; the reminder must not stop the tick
+        _log(f"notify failed: {exc}")
+    else:
+        _log("ping: " + json.dumps(ping, ensure_ascii=False))
     return text
 
 
@@ -203,6 +225,7 @@ def run_forever() -> None:
         tick_once(pid, phase=unfinished)
     overdue = []
     while True:
+        pid = persona.active_id()
         phase = clock.due_phase(pid)
         if not phase:
             break
@@ -216,6 +239,7 @@ def run_forever() -> None:
     sock = wake.bind()
     try:
         while True:
+            pid = persona.active_id()
             phase = clock.due_phase(pid)
             if phase:
                 tick_once(pid, phase=phase)

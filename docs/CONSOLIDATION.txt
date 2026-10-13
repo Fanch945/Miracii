@@ -28,7 +28,9 @@
   → working 改成同一段短印象，原文仍在 transcripts
 
 当天 23:00 后尚未总结
-  → daily：从印象抽 1–3 条事实候审（semantic）
+  → daily：从近一两天印象抽 1–3 条事实。高置信写入 semantic/ 与 calendar.txt；pattern 才进 pending
+  → 把当天 impression 整日复制成 episodic/YYYY-MM-DD.txt（一日一条）
+  → 同一段印象只抽一次（clock.json 里记指纹）
 
 周日晚
   → weekly：候审「像设定的模式」，仍不直接写 lore/profile
@@ -40,8 +42,9 @@
 working.txt     海马式情节的工作台，容量要小
 impression/     模糊后的印象区。一场坐下来写一块：那次 / 气氛 / keys
 episodic/       仍值得保留的具体事件
-semantic/       稳定事实
-learn_queue/    日周深化后的设定/知识候审
+semantic/       稳定事实（daily 高置信直接写入）
+learn_queue/    模式、低置信、改设定：候审
+calendar.txt    带日期的安排（daily 的 event）
 lore/           作者或你确认后的设定，慢系统的「新皮层」
 
 运行时：`python -m app.heartbeat` 睡到下一个截止点（STM / 30 分钟印象 / 日周），聊天用本机 UDP 叫醒，不再每 15 秒空转。

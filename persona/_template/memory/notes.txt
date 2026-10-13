@@ -2,9 +2,9 @@
 
 working.txt     短期工作记忆。对话结束后 5 分钟 stm 写入。
 impression/     印象区。30 分钟 routine 把细节糊成「那次大概怎样」（场面/气氛/keys，不要截断对白）。
-episodic/       仍具体的事件笔记。
-semantic/       日总结从印象抽出的稳定事实。
-learn_queue/    周总结才允许提出的设定/知识模式，确认前不写 lore。
+episodic/       daily 把当天印象抄成 YYYY-MM-DD.txt（一日一条）。event.txt 只是字段样例。
+semantic/       日总结从印象抽出的稳定事实（运行时写入）。
+learn_queue/    模式 / 低置信 / 改设定，确认前不写 lore。
 schedule.txt    stm_minutes / routine_minutes / 番茄钟参考 / quiet。
 
 详见 docs/CONSOLIDATION.txt

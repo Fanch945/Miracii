@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>设定编辑 · Miracii</title>
+    <link rel="icon" href="/static/favicon.ico" sizes="any" />
+    <link rel="icon" href="/static/favicon.jpg" type="image/jpeg" />
+    <link rel="stylesheet" href="/static/app.css?v=0.0.7" />
+    <link rel="stylesheet" href="/static/studio.css?v=0.0.1" />
+  </head>
+  <body>
+    <div class="studio">
+      <header class="studio-bar">
+        <a class="ghost" href="/">返回对话</a>
+        <img class="mark" src="/static/favicon.jpg" alt="" />
+        <div>
+          <h1 id="studio-title">设定编辑</h1>
+          <p id="studio-status" class="status">巩固和回复在离开前保持暂停</p>
+        </div>
+        <div class="studio-actions">
+          <button id="save-btn" type="button" disabled>保存</button>
+          <button id="resume-btn" class="ghost" type="button">恢复运行</button>
+          <button id="export-btn" class="ghost" type="button">导出</button>
+          <label class="ghost file-btn">
+            导入
+            <input id="import-input" type="file" accept=".zip,application/zip" hidden />
+          </label>
+        </div>
+      </header>
+      <div class="studio-body">
+        <aside class="studio-side">
+          <form id="create-form" class="studio-create">
+            <label class="sr-only" for="new-id">新人格 id</label>
+            <input id="new-id" maxlength="64" placeholder="新人格 id，如 mira-2" autocomplete="off" />
+            <button type="submit">新建</button>
+          </form>
+          <div id="file-list" class="studio-files"></div>
+          <form id="new-file-form" class="studio-create">
+            <label class="sr-only" for="new-path">新文件路径</label>
+            <input id="new-path" placeholder="lore/entries/名字.txt" autocomplete="off" />
+            <button type="submit">加文件</button>
+          </form>
+        </aside>
+        <section class="studio-editor">
+          <div id="file-label" class="dock-meta">选择一个文件。改完要点保存，不会自动写入。</div>
+          <textarea id="editor" spellcheck="false" placeholder="还没有打开文件"></textarea>
+        </section>
+      </div>
+    </div>
+    <script src="/static/studio.js?v=0.0.2"></script>
+  </body>
+</html>

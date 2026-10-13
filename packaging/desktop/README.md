@@ -5,7 +5,7 @@ pip install -r requirements.txt
 python -m app
 ```
 
-根目录 `Miracii.bat` 同样。窗口里就是现有可视化界面；心跳在同一进程里。
+根目录 `Miracii.bat` 用 `pythonw` 启动：只有聊天窗口，没有终端。心跳在同一进程里。`--web` / `--lan` 仍留在终端里，方便看地址。
 
 给手机连：
 

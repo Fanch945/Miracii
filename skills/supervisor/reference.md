@@ -7,11 +7,13 @@ The chat model (dsapi Zero) speaks. This supervisor (sumapi, later) only schedul
 | path | role |
 |---|---|
 | `persona/<id>/profile.txt` | identity; supervisor gets a short extract only |
+| packet `cast` | 你/他=对方姓名，她=人格姓名 |
 | `persona/<id>/memory/working.txt` | STM / working context |
 | `persona/<id>/memory/impression/` | blurred gist after ~30 min; scene + affect, not quotes |
 | `persona/<id>/memory/episodic/` | event notes |
-| `persona/<id>/memory/semantic/` | durable facts |
-| `persona/<id>/memory/learn_queue/pending.jsonl` | proposed writes |
+| `persona/<id>/memory/semantic/` | 日总结采纳后的稳定事实 |
+| `persona/<id>/memory/calendar.txt` | 带日期的安排；daily 的 `kind=event` 写入 |
+| `persona/<id>/memory/learn_queue/pending.jsonl` | 低置信 / `pattern` / 改设定类候审 |
 | `persona/<id>/memory/schedule.txt` | stm/routine, quiet, quota; pomodoro_* = task duration hints only |
 | `persona/<id>/lore/` | authored canon; supervisor does not rewrite |
 | `data/transcripts/<id>/` | raw dialogue |

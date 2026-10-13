@@ -10,6 +10,8 @@ import time
 import urllib.error
 import urllib.request
 
+from pathlib import Path
+
 from . import APP_CHANNEL, APP_VERSION
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 7788
@@ -76,10 +78,29 @@ def open_window(url: str) -> None:
         min_size=(360, 640),
         background_color="#161310",
     )
-    webview.start()
+    icon = Path(__file__).resolve().parent.parent / "favicon.ico"
+    try:
+        webview.start(icon=str(icon) if icon.is_file() else None)
+    except TypeError:
+        webview.start()
+
+
+def _ensure_stdio() -> None:
+    """pythonw has no console. print() would crash, and heartbeat errors would vanish."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    from .files import DATA_DIR
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    handle = (DATA_DIR / "app.log").open("a", encoding="utf-8")
+    if sys.stdout is None:
+        sys.stdout = handle
+    if sys.stderr is None:
+        sys.stderr = handle
 
 
 def main(argv: list[str] | None = None) -> int:
+    _ensure_stdio()
     parser = argparse.ArgumentParser(description="Miracii local companion")
     parser.add_argument("--web", action="store_true", help="only run the HTTP server (no window)")
     parser.add_argument("--lan", action="store_true", help="bind 0.0.0.0 so the Android client can connect")

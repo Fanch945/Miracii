@@ -8,15 +8,18 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Miracii" />
     <title>Miracii</title>
+    <link rel="icon" href="/static/favicon.ico" sizes="any" />
+    <link rel="icon" href="/static/favicon.jpg" type="image/jpeg" />
+    <link rel="apple-touch-icon" href="/static/favicon.jpg" />
     <link rel="manifest" href="/static/manifest.webmanifest" />
-    <link rel="stylesheet" href="/static/app.css" />
+    <link rel="stylesheet" href="/static/app.css?v=0.0.7" />
   </head>
   <body>
     <div class="workspace">
       <div class="shell">
         <header class="top">
           <div class="identity">
-            <span class="mark" aria-hidden="true"></span>
+            <img class="mark" src="/static/favicon.jpg" alt="" />
             <div>
               <h1 id="persona-name">Miracii</h1>
               <p id="status-line" class="status">专属对话</p>
@@ -25,7 +28,8 @@
           <div class="actions">
             <label class="sr-only" for="persona-select">人格</label>
             <select id="persona-select"></select>
-            <button id="console-btn" class="ghost" type="button">控制台</button>
+            <button id="studio-btn" class="ghost" type="button">设定</button>
+            <button id="console-btn" class="ghost" type="button">日志</button>
             <button id="refresh-btn" class="ghost" type="button" title="从记录重新载入对话，不会删除已经巩固的内容">
               刷新
             </button>
@@ -34,6 +38,12 @@
             </button>
           </div>
         </header>
+
+        <div id="hold-bar" class="hold-bar" hidden>
+          <span>设定编辑中，回复和巩固已暂停。</span>
+          <a id="hold-edit" href="/studio">回到编辑</a>
+          <button id="hold-resume" class="ghost" type="button">恢复运行</button>
+        </div>
 
         <main id="thread" class="thread" aria-live="polite">
           <p class="empty" id="empty-hint">还没有话。从下面那一行开始。</p>
@@ -59,10 +69,18 @@
         </form>
       </div>
 
+      <div id="toasts" class="toasts" aria-live="polite"></div>
       <section class="dock" id="dock">
+        <div id="dock-resize" class="dock-resize" title="拖高日志"></div>
         <header class="dock-bar">
-          <button id="dock-toggle" type="button">控制台</button>
-          <span id="dock-hint">日志 · 对话 · 记忆 · 设定 · 人设</span>
+          <button id="dock-toggle" type="button">日志</button>
+          <label class="sr-only" for="dock-mode">日志类别</label>
+          <select id="dock-mode">
+            <option value="memory">记忆</option>
+            <option value="runtime">监督</option>
+          </select>
+          <span id="dock-hint"></span>
+          <button id="dock-jump" class="ghost" type="button">看监督</button>
           <button id="dock-refresh" class="ghost" type="button">刷新</button>
         </header>
         <div class="dock-body">
@@ -84,7 +102,7 @@
         </div>
       </section>
     </div>
-    <script src="/static/app.js?v=0.0.1"></script>
-    <script src="/static/console.js?v=0.0.1"></script>
+    <script src="/static/app.js?v=0.0.5"></script>
+    <script src="/static/console.js?v=0.0.5"></script>
   </body>
 </html>
