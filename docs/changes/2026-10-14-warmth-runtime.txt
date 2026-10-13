@@ -1,0 +1,63 @@
+# P1 第三步：空闲 tick 接进运行时
+
+- 日期：2026-10-14
+- 作者：DSH（DeepSeek Harness agent）
+- 关联提交：本文件所在提交
+- 关联设计文档：[docs/reference/jiwen-spec.txt](../reference/jiwen-spec.txt)
+- 前置记录：[2026-10-14-warmth-engine.txt](2026-10-14-warmth-engine.txt)、[2026-10-14-warmth-config.txt](2026-10-14-warmth-config.txt)
+
+## 背景
+
+主动开口以前是**结构性饿死**：`clock.due_phase()` 只返回巩固阶段，supervisor 从没有机会回答"我现在想不想找她"；`schedule.tick_minutes` 被解析却**从未被任何代码读取**。
+
+这一步把它接上：**积温按自己的节奏醒来，与巩固 tick 完全分开**——积温管时机，监督管记忆。
+
+## 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `app/warmth.py` | 状态落盘（`warmth-state.json`）+ `ambient_tick()`（第一次只记时间，之后按真实间隔推进）+ `seconds_until_due()`（读 `schedule.tick_minutes`）+ 命令行 `--once` / `--state` |
+| `app/heartbeat.py` | 新增 `run_warmth_tick()`：跑一次空闲 tick，**只有真的要开口**（`contact` / `force_contact`）才走现有 `deliver_speak` 通道；`run_forever` 的睡眠时长改为与积温到点时间取小，并加防自旋保险 |
+| `tests/test_warmth.py` | +15 项：状态往返、坏状态、坏值夹紧、首次只记时间、第二次推进、时钟倒退、到点计算、**记忆文件哈希守卫**、接线（contact 才说话 / 只观察不说话 / 引擎坏掉不拖垮心跳 / 未到点不动） |
+| `README.md` | 记忆文件表补 `warmth-state.json` 说明 |
+
+三处设计决定：
+
+1. **首次调用只记时间，不推进**——否则每重启一次她就"凭空老去"一大截。
+2. **开口仍然过原来的闸门**：`deliver_speak` → `_may_speak` → 安静时段 / 每日配额 / 正在聊 / 人工 hold 全部照旧生效。积温只提供"想不想"，不绕过任何既有规则。
+3. **防自旋**：状态文件写不进去时 `seconds_until_due` 会一直返回 0，所以循环里加了"无论如何最多一分钟尝试一次"的保险。
+
+## 验证
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+# Ran 125 tests ... OK (skipped=1)      ← 上一步 110 项
+```
+
+真实人格上端到端跑一遍：
+
+```powershell
+.venv\Scripts\python.exe -m app.warmth --once     # 第一次：elapsed 0.0, first true, connection 0.0
+# （等 35 秒）
+.venv\Scripts\python.exe -m app.warmth --once     # 第二次：elapsed 0.59, connection 0.0004
+.venv\Scripts\python.exe -m app.warmth --state
+# 空闲 tick 间隔：20.0 分钟（读自真实 schedule.txt）；距下一次 1200 秒
+```
+
+`0.0004 ≈ 0.0007/min × 0.59` ✓。状态文件写在 `persona/miracii/memory/warmth-state.json`。
+
+**记忆文件守卫**：`persona/miracii` 下 36 个受保护文件（排除 warmth 自己的两份与星图 sidecar），跑前跑后哈希一致。
+
+途中修掉一个自己造的 CLI 冲突：新加的 `--minutes` 与干跑原有的 `--minutes` 撞名，argparse 直接抛错——改名为 `--since-message`。
+
+## 风险与未决
+
+- **真实心跳里的行为还没验过**：单测覆盖了接线，但"跑一整夜、第二天真的主动开口"要等你让它跑起来才知道。
+- **`user_state` 还没有人填**：字段与调制都在，但要接一个轻量模型从最近对话推断"忙碌/放松/低落"（下一步或 P2）。
+- **`immersion` 也没有人填**：需要"她在做事"的任务源（监督输出的 `tasks` 是天然候选）。
+- 阈值仍是前辈的起点，**未按 Miracii 校准**；标注数据还没开始攒。
+- 台账里 `warmth.json`（配置）与 `warmth-state.json`（状态）都在 `persona/<id>/memory/` 下，与星图 sidecar 同一纪律：**只新增自己的文件，删掉即回滚**。
+
+## 复核
+
+（留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）

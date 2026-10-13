@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 import time
 from datetime import datetime
 
-from . import clock, db, files, notices, notify, persona, starmap, supervisor, wake
+from . import clock, db, files, notices, notify, persona, starmap, supervisor, wake, warmth
 from .files import DATA_DIR
 from .keys import load_keys
 
@@ -215,6 +216,76 @@ def deliver_speak(persona_id: str, decision: dict, packet: dict, *, force: bool 
     return text
 
 
+_STAMP = re.compile(r"\[(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})")
+
+
+def _parse_local(raw: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.astimezone()
+
+
+def _minutes_since_message(persona_id: str) -> float | None:
+    """距对方上一次开口过了多久——积温的"越等越急"靠它。
+
+    优先读 jsonl（新格式，带 `created_at` 与 `role`）；老 txt 用行首时间戳兜底。
+    """
+    folder = files.TRANSCRIPT_DIR / persona_id
+    if not folder.is_dir():
+        return None
+    candidates = sorted(folder.glob("*.jsonl")) or sorted(folder.glob("*.txt"))
+    if not candidates:
+        return None
+    newest = max(candidates, key=lambda path: path.stat().st_mtime)
+    stamp: datetime | None = None
+    for line in newest.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            if "你：" in line:
+                found = _STAMP.search(line)
+                if found:
+                    stamp = _parse_local(found.group(1).replace(" ", "T"))
+            continue
+        if isinstance(row, dict) and row.get("role") == "user" and row.get("created_at"):
+            parsed = _parse_local(str(row["created_at"]))
+            if parsed:
+                stamp = parsed
+    if stamp is None:
+        return None
+    return max(0.0, (datetime.now().astimezone() - stamp).total_seconds() / 60.0)
+
+
+def run_warmth_tick(persona_id: str) -> dict:
+    """空闲 tick：积温回答"现在想不想开口"，记忆那边照旧归巩固链。
+
+    与巩固 tick 完全分开——这正是它以前被饿死的原因（supervisor 只在巩固截止点被叫醒，
+    那些时刻它被要求整理记忆，而不是判断想不想说话）。
+    """
+    try:
+        result = warmth.ambient_tick(persona_id, minutes_since_message=_minutes_since_message(persona_id))
+    except Exception as exc:  # 引擎出问题不该拖垮心跳
+        _log(f"warmth tick failed: {exc}")
+        return {"elapsed": 0.0, "fired": [], "error": str(exc)}
+    if result.get("elapsed", 0) <= 0:
+        return result
+    gates = [entry["gate"] for entry in result.get("fired", [])]
+    _log(f"warmth {result['elapsed']}m: {'/'.join(gates) if gates else '无动作'} | {result.get('explain', '')}")
+    if any(gate in {"contact", "force_contact"} for gate in gates):
+        packet = supervisor.build_packet(persona_id, phase="idle")
+        topic = (result.get("hook") or "").strip() or "惦记着刚才的事"
+        if result.get("style"):
+            topic = f"{topic}。写法：{result['style']}"
+        uttered = deliver_speak(persona_id, {"speak": True, "topic": topic}, packet, force=False)
+        _log("warmth spoke: " + (uttered[:80] if uttered else "(被挡下或没生成)"))
+    return result
+
+
 def run_forever() -> None:
     pid = persona.active_id()
     sched = supervisor.parse_schedule(pid)
@@ -241,6 +312,7 @@ def run_forever() -> None:
     if overdue:
         _log(f"catch-up done: {' → '.join(overdue)}")
     sock = wake.bind()
+    warm_guard = 0.0
     try:
         while True:
             pid = persona.active_id()
@@ -250,6 +322,17 @@ def run_forever() -> None:
                 continue
             deadline = clock.next_deadline(pid)
             seconds = (deadline - clock._now()).total_seconds()
+            warm = warmth.seconds_until_due(pid)
+            if warm <= 0:
+                # 状态写不进去时 seconds_until_due 会一直返回 0——保险起见最多一分钟跑一次
+                moment = time.monotonic()
+                if moment - warm_guard >= 60.0:
+                    warm_guard = moment
+                    run_warmth_tick(pid)
+                else:
+                    time.sleep(1.0)
+                continue
+            seconds = min(seconds, warm)
             if seconds <= 0:
                 time.sleep(0.2)
                 continue

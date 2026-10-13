@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import tempfile
@@ -428,6 +429,156 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(set(shown), {"thresholds", "rates", "user_state_lift", "persona", "extra_axes"})
         self.assertIn("accel_delay", shown["rates"])
         self.assertIn("hesitation_lift", shown["thresholds"])
+
+
+class RuntimeTests(unittest.TestCase):
+    """空闲 tick：状态落盘、"到点才动"、以及它不去碰记忆。"""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="warmth-run-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        (self.root / "memory").mkdir(parents=True, exist_ok=True)
+        patcher = mock.patch.object(persona, "folder", lambda persona_id=None: self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.state = self.root / "memory" / warmth.STATE_NAME
+
+    def snapshot(self) -> dict[str, str]:
+        return {
+            path.relative_to(self.root).as_posix(): hashlib.sha1(path.read_bytes()).hexdigest()
+            for path in sorted(self.root.rglob("*"))
+            if path.is_file() and path.name not in {warmth.STATE_NAME, warmth.CONFIG_NAME}
+        }
+
+    def test_missing_state_starts_from_zero(self):
+        state, notes = warmth.load_state(path=self.state)
+        self.assertEqual(notes, [])
+        self.assertEqual(state.connection, 0.0)
+        self.assertIsNone(state.last_tick)
+
+    def test_state_round_trips(self):
+        state = warmth.State(connection=0.4, pride=0.2, hesitation=0.3, user_state="busy")
+        state.last_tick = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+        warmth.save_state(None, state, path=self.state)
+        loaded, _ = warmth.load_state(path=self.state)
+        self.assertAlmostEqual(loaded.connection, 0.4)
+        self.assertAlmostEqual(loaded.hesitation, 0.3)
+        self.assertEqual(loaded.user_state, "busy")
+        self.assertEqual(loaded.last_tick, state.last_tick)
+
+    def test_broken_state_falls_back_without_raising(self):
+        self.state.write_text("{ not json", encoding="utf-8")
+        state, notes = warmth.load_state(path=self.state)
+        self.assertEqual(state.connection, 0.0)
+        self.assertTrue(notes and "读不了" in notes[0])
+
+    def test_state_with_junk_values_keeps_the_good_ones(self):
+        self.state.write_text(json.dumps({"connection": "x", "pride": 5, "valence": float("nan")}), encoding="utf-8")
+        state, _ = warmth.load_state(path=self.state)
+        self.assertEqual(state.connection, 0.0)
+        self.assertEqual(state.pride, 1.0)  # 夹到轴的上界
+        self.assertEqual(state.valence, 0.0)
+
+    def test_first_ambient_tick_only_stamps_the_clock(self):
+        start = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+        result = warmth.ambient_tick(now=start, path=self.state)
+        self.assertTrue(result["first"])
+        self.assertEqual(result["fired"], [])
+        self.assertAlmostEqual(result["snapshot"]["connection"], 0.0)
+        state, _ = warmth.load_state(path=self.state)
+        self.assertEqual(state.last_tick, start)
+
+    def test_second_ambient_tick_advances_by_the_elapsed_time(self):
+        start = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+        warmth.ambient_tick(now=start, path=self.state)
+        result = warmth.ambient_tick(now=start + timedelta(minutes=30), path=self.state)
+        self.assertEqual(result["elapsed"], 30.0)
+        self.assertGreater(result["snapshot"]["connection"], 0.0)
+        self.assertIn("explain", result)
+
+    def test_a_backwards_clock_changes_nothing(self):
+        start = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+        warmth.ambient_tick(now=start, path=self.state)
+        result = warmth.ambient_tick(now=start - timedelta(minutes=10), path=self.state)
+        self.assertEqual(result["elapsed"], 0.0)
+        self.assertEqual(result["fired"], [])
+
+    def test_seconds_until_due_walks_from_zero_to_the_interval(self):
+        self.assertEqual(warmth.seconds_until_due(), 0.0)  # 还没有状态 = 立刻该跑
+        start = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+        warmth.ambient_tick(now=start, path=self.state)
+        self.assertAlmostEqual(warmth.seconds_until_due(now=start), warmth.tick_minutes() * 60.0)
+        self.assertEqual(warmth.seconds_until_due(now=start + timedelta(hours=3)), 0.0)
+
+    def test_tick_minutes_comes_from_the_schedule(self):
+        with mock.patch.object(warmth, "tick_minutes", return_value=7.0):
+            self.assertEqual(warmth.tick_minutes(), 7.0)
+
+    def test_ambient_tick_never_touches_memory_files(self):
+        (self.root / "memory" / "working.txt").write_text("短期工作台", encoding="utf-8")
+        (self.root / "memory" / "semantic").mkdir(exist_ok=True)
+        (self.root / "memory" / "semantic" / "facts.txt").write_text("甲 | 乙 | 2026-10-01 | k\n", encoding="utf-8")
+        before = self.snapshot()
+        start = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+        warmth.ambient_tick(now=start, path=self.state)
+        warmth.ambient_tick(now=start + timedelta(minutes=45), path=self.state)
+        self.assertEqual(before, self.snapshot())
+        self.assertTrue(self.state.is_file())
+
+
+class HeartbeatWiringTests(unittest.TestCase):
+    """心跳把积温接上 speak 通道：只有真的要开口才说话。"""
+
+    def run_tick(self, gates: list[str]):
+        from app import heartbeat
+
+        fired = [{"gate": gate, "fired": True, "detail": "", "gap": None, "urgency": 0.5} for gate in gates]
+        with mock.patch.object(
+            heartbeat.warmth,
+            "ambient_tick",
+            return_value={"elapsed": 30.0, "fired": fired, "hook": "想找对方，但拉不下脸", "style": "欲言又止", "explain": "触发"},
+        ), mock.patch.object(heartbeat, "_minutes_since_message", return_value=120.0), mock.patch.object(
+            heartbeat.supervisor, "build_packet", return_value={}
+        ), mock.patch.object(heartbeat, "deliver_speak", return_value="在。") as speak, mock.patch.object(
+            heartbeat, "_log"
+        ):
+            result = heartbeat.run_warmth_tick("test")
+        return result, speak
+
+    def test_contact_goes_through_the_speak_channel(self):
+        _, speak = self.run_tick(["contact"])
+        self.assertEqual(speak.call_count, 1)
+        decision = speak.call_args.args[1]
+        self.assertTrue(decision["speak"])
+        self.assertIn("拉不下脸", decision["topic"])
+        self.assertIn("欲言又止", decision["topic"])
+
+    def test_forced_contact_speaks_too(self):
+        _, speak = self.run_tick(["force_contact"])
+        self.assertEqual(speak.call_count, 1)
+
+    def test_observation_alone_stays_silent(self):
+        _, speak = self.run_tick(["observation"])
+        self.assertEqual(speak.call_count, 0)
+
+    def test_a_broken_engine_never_stops_the_heartbeat(self):
+        from app import heartbeat
+
+        with mock.patch.object(heartbeat.warmth, "ambient_tick", side_effect=RuntimeError("boom")), mock.patch.object(
+            heartbeat, "_log"
+        ):
+            result = heartbeat.run_warmth_tick("test")
+        self.assertEqual(result["fired"], [])
+        self.assertIn("boom", result["error"])
+
+    def test_nothing_happens_before_the_interval_elapses(self):
+        from app import heartbeat
+
+        with mock.patch.object(
+            heartbeat.warmth, "ambient_tick", return_value={"elapsed": 0.0, "fired": []}
+        ), mock.patch.object(heartbeat, "_log"), mock.patch.object(heartbeat, "deliver_speak") as speak:
+            heartbeat.run_warmth_tick("test")
+        self.assertEqual(speak.call_count, 0)
 
 
 if __name__ == "__main__":

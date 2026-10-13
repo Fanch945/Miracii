@@ -313,6 +313,141 @@ def effective_config(config: Config) -> dict:
     return out
 
 
+# ── 状态落盘 ────────────────────────────────────────
+STATE_NAME = "warmth-state.json"
+_AXIS_FIELDS = ("connection", "pride", "valence", "arousal", "immersion", "hesitation")
+
+
+def state_path(persona_id: str | None = None) -> Path:
+    from . import persona
+
+    return persona.folder(persona_id) / "memory" / STATE_NAME
+
+
+def state_to_dict(state: State) -> dict:
+    return {
+        "version": 1,
+        **{name: state.axis(name) for name in _AXIS_FIELDS},
+        "extra": dict(state.extra),
+        "last_activity_at": state.last_activity_at.isoformat() if state.last_activity_at else None,
+        "last_tick": state.last_tick.isoformat() if state.last_tick else None,
+        "user_state": state.user_state,
+    }
+
+
+def state_from_dict(payload: dict) -> State:
+    """坏值一律退回该轴的默认，绝不抛异常——状态文件坏了不该让心跳停摆。"""
+    state = State()
+    if not isinstance(payload, dict):
+        return state
+    for name in _AXIS_FIELDS:
+        if name not in payload:
+            continue
+        try:
+            number = float(payload[name])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            state.set_axis(name, clamp(number, *AXIS_RANGES[name]))
+    extra = payload.get("extra")
+    if isinstance(extra, dict):
+        state.extra = {
+            str(k): float(v)
+            for k, v in extra.items()
+            if isinstance(v, (int, float)) and math.isfinite(float(v))
+        }
+    for name in ("last_activity_at", "last_tick"):
+        raw = payload.get(name)
+        if isinstance(raw, str) and raw:
+            try:
+                setattr(state, name, datetime.fromisoformat(raw))
+            except ValueError:
+                pass
+    if payload.get("user_state"):
+        state.user_state = str(payload["user_state"])
+    return state
+
+
+def load_state(persona_id: str | None = None, *, path: Path | None = None) -> tuple[State, list[str]]:
+    target = path or state_path(persona_id)
+    if not target.is_file():
+        return State(), []
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return State(), [f"{target.name}: 读不了（{exc}），从零开始"]
+    return state_from_dict(payload), []
+
+
+def save_state(persona_id: str | None, state: State, *, path: Path | None = None) -> Path:
+    """写状态。与星图同一纪律：只新增自己的文件，绝不碰记忆正文。"""
+    target = path or state_path(persona_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(state_to_dict(state), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
+def tick_minutes(persona_id: str | None = None) -> float:
+    """空闲 tick 的间隔：读 `schedule.txt` 里那个一直没人用的 `tick_minutes`。"""
+    from . import supervisor
+
+    try:
+        raw = supervisor.parse_schedule(persona_id).get("tick_minutes")
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 0.0
+    return value if value > 0 else 20.0
+
+
+def seconds_until_due(persona_id: str | None = None, *, now: datetime | None = None) -> float:
+    """距下一次空闲 tick 还有多少秒；`0` = 现在就该跑（含第一次）。"""
+    now = now or _now()
+    state, _ = load_state(persona_id)
+    if state.last_tick is None:
+        return 0.0
+    elapsed = (now - state.last_tick).total_seconds()
+    return max(0.0, tick_minutes(persona_id) * 60.0 - elapsed)
+
+
+def ambient_tick(
+    persona_id: str | None = None,
+    *,
+    now: datetime | None = None,
+    minutes_since_message: float | None = None,
+    config: Config | None = None,
+    path: Path | None = None,
+) -> dict:
+    """空闲 tick：推进积温、落盘、返回这次触发了什么。
+
+    第一次调用只记时间（不推进）——否则重启一次就会凭空老去一大截。
+    """
+    stamp = now or _now()
+    resolved = config or load_config(persona_id)[0]
+    state, notes = load_state(persona_id, path=path)
+    if state.last_tick is None:
+        state.last_tick = stamp
+        save_state(persona_id, state, path=path)
+        return {"elapsed": 0.0, "first": True, "fired": [], "notes": notes, "snapshot": Engine(resolved, state).snapshot()}
+
+    elapsed = (stamp - state.last_tick).total_seconds() / 60.0
+    if elapsed <= 0:
+        return {"elapsed": 0.0, "first": False, "fired": [], "notes": notes, "snapshot": Engine(resolved, state).snapshot()}
+
+    engine = Engine(resolved, state)
+    fired = engine.tick(elapsed, now=stamp, minutes_since_message=minutes_since_message)
+    save_state(persona_id, engine.state, path=path)
+    return {
+        "elapsed": round(elapsed, 2),
+        "first": False,
+        "fired": fired,
+        "explain": engine.explain(fired),
+        "style": engine.style_guidance(),
+        "hook": engine.prompt_context(),
+        "snapshot": engine.snapshot(),
+        "notes": notes,
+    }
+
+
 @dataclass
 class State:
     connection: float = 0.0
@@ -700,9 +835,12 @@ if __name__ == "__main__":
     parser.add_argument("--minutes", type=float, default=20.0, help="每步推进多少分钟")
     parser.add_argument("--steps", type=int, default=12)
     parser.add_argument("--user-state", default="active")
+    parser.add_argument("--since-message", type=float, default=None, help="距上次消息多少分钟（--once 用）")
     parser.add_argument("--write-template", action="store_true", help="把特化模板写到 persona/<id>/memory/warmth.json")
     parser.add_argument("--overwrite", action="store_true", help="配合 --write-template：覆盖已有文件")
     parser.add_argument("--show", action="store_true", help="只显示当前生效的旋钮与配置问题")
+    parser.add_argument("--once", action="store_true", help="跑一次真实的空闲 tick（会落盘状态）")
+    parser.add_argument("--state", action="store_true", help="显示已保存的状态与距下次到点还有多久")
     options = parser.parse_args()
 
     from . import persona
@@ -718,6 +856,22 @@ if __name__ == "__main__":
     if options.show:
         print(json.dumps(effective_config(config), ensure_ascii=False, indent=2))
         for note in notes:
+            print(f"· {note}")
+        raise SystemExit(0)
+
+    if options.state:
+        state, state_notes = load_state(pid)
+        print(f"状态：{state_path(pid)}")
+        print(json.dumps(state_to_dict(state), ensure_ascii=False, indent=2))
+        print(f"空闲 tick 间隔：{tick_minutes(pid)} 分钟；距下一次 {seconds_until_due(pid):.0f} 秒")
+        for note in state_notes:
+            print(f"· {note}")
+        raise SystemExit(0)
+
+    if options.once:
+        result = ambient_tick(pid, minutes_since_message=options.since_message)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        for note in result.get("notes", []):
             print(f"· {note}")
         raise SystemExit(0)
 

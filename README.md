@@ -109,6 +109,7 @@ APIkeys.txt           不入库。一行 provider=alias=secret
 | `memory/learn_queue/pending.jsonl` | pattern、低置信、改设定。确认前不进 lore |
 | `memory/starmap.jsonl` | 星图 sidecar：每行一个星点的元数据（情感权重、召回次数、指纹锚点）。**不改动上面任何记忆文件**，删掉即回滚。规范见 `docs/STARMAP.txt` |
 | `memory/warmth.json` | 积温引擎的人格特化旋钮（阈值 / 速率 / 特化轴）。删掉即回退默认；坏键坏值只提示不报错 |
+| `memory/warmth-state.json` | 积温的运行状态（六个轴 + 上次 tick 时间）。由心跳按 `schedule.txt` 的 `tick_minutes` 推进；删掉即从零开始 |
 | `memory/notes.txt` | 记忆分层说明 |
 
 `form` 写成其他值时，检索按 `digest` 处理。`constant: yes` 的词条不靠关键词，每轮注入。
