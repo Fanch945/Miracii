@@ -1,0 +1,53 @@
+# 星图记忆元数据层 P0：规范 + sidecar 索引
+
+- 日期：2026-10-13
+- 作者：DSH（DeepSeek Harness agent）
+- 关联提交：本文件所在提交
+- 关联设计文档：[docs/STARMAP.txt](../STARMAP.txt)
+
+## 背景
+
+记忆的**读**这一侧一直是短板：`recall.py` 只有"命中 key 的字符长度"这一个得分，**时间与情绪完全不参与**；同一件事可能以粗细两种粒度同时被注入；被反复提起的旧梗和刚发生的事权重相同。
+
+参照 `ClaraShafiq/MemoryConstellations`（MIT）的四样东西——**情感权重分档驱动衰减、对数召回加成、亮度与检索优先级分离、指纹变化才重新裁决**——先建地基。**约束：不动记忆与设定的实际内容，保留原分类文件树。**
+
+## 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `docs/STARMAP.txt` | 新增。结构规范：字段、六档情感锚定、四档衰减、指纹锚点、仲裁规则、验收与阶段 |
+| `app/starmap.py` | 新增。sidecar 索引：`blocks()` 扫描记忆树 / `sync()` 对账 / `brightness()` `/ `magnitude()` / `bump()` / `project()` / `report()` |
+| `tests/test_starmap.py` | 新增。22 项测试，含一条**专门验证记忆文件字节不变** |
+| `persona/<id>/memory/starmap.jsonl` | 生成物（该目录已 gitignore，不入库） |
+
+**元数据全部落在 sidecar，记忆文件一个字节不改**；派生值（decay / recallBonus / brightness / mag）一律现算不落盘。
+
+## 验证
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+# Ran 44 tests ... OK (skipped=1)      ← 原有 22 + 新增 22
+```
+
+真实人格上跑一次（只读记忆、只写 sidecar）：
+
+```powershell
+.venv\Scripts\python.exe -m app.starmap --sync
+# {"added": 29, "retired": 0, "deferred": 0}
+```
+
+**关键验证：记忆与设定文件未被改动**——对 `persona/miracii/` 下 35 个文件逐一取 SHA256，sync 前后**完全一致**；同时全量测试里有一条 `test_sync_never_touches_a_memory_file` 持续守住这条约束。
+
+`--report` 读数（节选）：最亮 `memory/impression/2026-10-13.txt#0`（mag 1.0，ew 0.6）；最暗是旧印象与 `lore/entries/*`（mag 5.1–5.4）。**lore 词条统一 ew 0.3 是正确行为**：世界书是作者设定，没有"气氛"行可推情绪权重。
+
+## 风险与未决
+
+- **P0 本身用户不可感**，它是地基；可感变化在 P0.5（层级仲裁 + 老梗降权）。
+- `ew` 目前由本地关键词表从 `气氛：` 行**临时推导**（六档锚定）。真正应该由监督在写入时打分——排在 P2。
+- `src` 字段暂记为 `kind:文件名` / `authored`，**还没有回指到具体 transcript 消息**；等 `clock.json` 的巩固游标接上再补。
+- `starmap.jsonl` 的位置（`persona/<id>/memory/` vs `data/`）待确认；改一行路径即可切换。
+- 未做：P0.5 的 `recall.py` 接入（层级仲裁、亮度与检索优先级分离）。
+
+## 复核
+
+（留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
