@@ -78,38 +78,9 @@ python -m unittest discover -s tests -t .
 - 不在 `notify: off` 之外再做「免打扰时段」——安静时段已经由监督那层挡住了
 - 不动 `requirements.txt`，也不要求管理员权限（只写当前用户的注册表键）
 
-## Cursor 复核
+## 改动账
 
-系统通知在心跳线程里同步调用 PowerShell（失败会连试两个 AppID，各等最多 15 秒），冷启动或超时会堵住唤醒和下一次 tick；浮层要等这条命令结束才出现。
-浮层在守护线程里跑 tkinter `mainloop`，而 `python -m app` 的心跳与 pywebview 同进程，第二套界面循环有机会把主窗口拖垮；`_popup` 在窗口真正建出来之前就返回成功。
-`notified:` 只在 `fired` 时落日志，焦点静默、开关关闭、两层都失败都没有记录；`proactive` 若抛错，台词已经入库，整条心跳线程却会退出。
-通知会留在操作中心，主动说的话可能一直可见；点浮层只收起，不会把聊天窗口拉到前台。
-多条同时出现时纵坐标会算出屏幕外；接线测试只核对 `heartbeat.notify` 是同一模块，调用被拆掉也仍然通过。
+这条功能的变更记录、Cursor 的复核与逐条回应，都在
+[docs/changes/2026-10-13-notify.txt](changes/2026-10-13-notify.txt)。
 
-## 第二轮：按复核改了什么
-
-| 复核意见 | 处理 |
-|---|---|
-| 同步调 PowerShell 会堵住 tick，失败还要再等一个 AppID | 改成**一次调用只用一个 AppID**（注册成功就用 `Miracii`，否则直接上回退 ID），超时 15s → 8s，典型 <1s。tick 本身已有 45s×3 的 sumapi 请求，这个量级不改变原有节奏 |
-| `_popup` 在窗口真正建出来之前就返回成功 | 加 `threading.Event` 就绪信号：`deiconify` + `update` 之后才置位，`_popup` 最多等 2s，返回值现在真的代表「已上屏」 |
-| `proactive` 抛错会带走整条心跳线程 | `deliver_speak` 用 try/except 包住调用，`proactive` 内部再逐层兜底（错误进 `toast_error` / `popup_error`）。台词已经入库，提醒失败不该影响巩固 |
-| 点浮层只收起，不拉前台；通知留在操作中心 | 点击改成 `focus_app()` 后再收起。通知留在操作中心是 Windows 自身行为，不干预 |
-| 多条浮层算出屏幕外；接线测试太弱 | 堆叠上限 4 条 + 纵坐标下限 80px；接线测试换成真的调 `deliver_speak`（打桩全部副作用），断言 ping 带着已入库的那句话被调用，且 ping 抛错不外泄 |
-
-验证：`python -m unittest discover -s tests -t .` → 20 项通过（另有 1 项实弹需显式开启）；
-`python -m app.notify --force "…"` → `{"fired": true, "toast": true, "popup": true}`；
-`focus_app()` 在标题为 `Miracii v0.0.1` 的窗口存在时返回 true，之后 `window_focused()` 为 true。
-
-## 第三轮：浮层默认关闭
-
-实测下来浮层没被注意到：它和 Windows 通知挤在右下角同一块地方，弹出来就被盖住。既然通知
-本身已经够显眼，就只留通知。
-
-- `POPUP_ENABLED = False`（`app/notify.py`）。`proactive()` 不再碰浮层，连线程都不起，
-  返回值里也不会出现 `popup` 字段。
-- 浮层代码、点击聚焦 `focus_app()`、堆叠与越界处理、以及相关测试全部保留；测试用
-  `mock.patch.object(notify, "POPUP_ENABLED", True)` 覆盖「开着时」的分支，所以这条路径没有失修。
-- 想恢复：改一个常量。
-
-验证：`python -m unittest discover -s tests -t .` → 22 项通过（另有 1 项实弹需显式开启）；
-`python -m app.notify --force "…"` → `{"fired": true, "toast": true}`，无 `popup` 字段。
+设计文档只描述「现在怎么工作」；评审来回与当次决定写进改动账，不再堆在这里。

@@ -1,10 +1,14 @@
 #!/bin/sh
-# Miracii pre-commit hook: the test suite must pass before anything lands.
+# Miracii pre-commit hook.
+#
+#   1. the test suite must pass before anything lands
+#   2. code / design docs changed without docs/changes/ -> remind (blocking only in strict mode)
 #
 # Enable once per clone (it is not copied automatically):
 #     git config core.hooksPath githooks
 #
-# Skip a single commit with:  git commit --no-verify
+# Skip a single commit with:            git commit --no-verify
+# Make the change record mandatory:     CHANGE_RECORDS_STRICT=1 git commit ...
 
 root=$(git rev-parse --show-toplevel) || exit 0
 cd "$root" || exit 0
@@ -17,20 +21,40 @@ for candidate in ".venv/Scripts/python.exe" ".venv/bin/python" "python3" "python
     fi
 done
 
-if [ -z "$python" ]; then
+if [ -n "$python" ]; then
+    log="$(git rev-parse --git-dir)/pre-commit-tests.log"
+    echo "pre-commit: $python -m unittest discover -s tests -t ."
+    if "$python" -m unittest discover -s tests -t . >"$log" 2>&1; then
+        echo "pre-commit: 测试通过（完整输出见 $log）"
+    else
+        echo "" >&2
+        echo "pre-commit: 测试没通过，提交已中止。" >&2
+        echo "pre-commit: 想先跳过这一次用 git commit --no-verify；完整输出见 $log" >&2
+        tail -n 25 "$log" >&2 2>/dev/null || cat "$log" >&2
+        exit 1
+    fi
+else
     echo "pre-commit: 找不到 Python，跳过测试（装好解释器后会自动生效）" >&2
-    exit 0
 fi
 
-log="$(git rev-parse --git-dir)/pre-commit-tests.log"
-echo "pre-commit: $python -m unittest discover -s tests -t ."
-if "$python" -m unittest discover -s tests -t . >"$log" 2>&1; then
-    tail -n 3 "$log" | sed 's/^/pre-commit: /'
-    exit 0
+# Change record: behaviour or design docs staged, but nothing under docs/changes/.
+# Pure shell on purpose: no grep/sed here, so the check works however the hook is invoked.
+touched=""
+record=""
+for staged in $(git diff --cached --name-only); do
+    case "$staged" in
+        docs/changes/*) record=yes ;;
+        app/*|tests/*|requirements.txt|docs/*.txt) touched=yes ;;
+    esac
+done
+
+if [ -n "$touched" ] && [ -z "$record" ]; then
+    echo "pre-commit: 提醒——这次改了代码或设计文档，但没有动 docs/changes/ 的改动账。" >&2
+    echo "pre-commit: 规矩见 docs/changes/README.txt，用 docs/changes/_TEMPLATE.txt 起头。" >&2
+    if [ "${CHANGE_RECORDS_STRICT:-0}" = "1" ]; then
+        echo "pre-commit: CHANGE_RECORDS_STRICT=1，按规矩中止本次提交。" >&2
+        exit 1
+    fi
 fi
 
-echo "" >&2
-echo "pre-commit: 测试没通过，提交已中止。" >&2
-echo "pre-commit: 想先跳过这一次用 git commit --no-verify；完整输出见 $log" >&2
-tail -n 25 "$log" >&2
-exit 1
+exit 0

@@ -1,0 +1,99 @@
+# 改动登记规矩：模块化、常态化，并与 Cursor 通气
+
+- 日期：2026-10-13
+- 作者：DSH（DeepSeek Harness agent）
+- 关联提交：本文件所在提交
+- 关联设计文档：无（本文件就是这套规矩自己的账）
+
+## 背景
+
+「改动登记」原先只是 `docs/NOTIFY.txt` 里的一次性做法：设计说明、评审来回、逐轮修复全堆在
+同一个文件里。人要求把它**模块化、常态化**，并且让 Cursor 也知道、也照着做——两个 agent
+轮流改同一个仓库，账必须落在文件里，不能散在各自的对话里。
+
+## 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `docs/changes/README.txt` | 新增。规矩全文：判据、文件名、角色分工、复核方默认动作 |
+| `docs/changes/_TEMPLATE.txt` | 新增。起头模板 |
+| `docs/changes/2026-10-13-notify.txt` | 新增。第一条实例：通知功能的背景/改动/验证/复核/回应 |
+| `docs/NOTIFY.txt` | 收窄为「模块怎么工作」；评审来回迁进上面的记录，末尾留指针 |
+| `.cursor/rules/change-records.mdc` | 新增。`alwaysApply: true`，Cursor 每个会话都读 |
+| `.cursor/skills/persona-notify/SKILL.md` | 指针补上改动账（`.cursor/` 未入库） |
+| `README.md` | 文档表与入口段各加一行 |
+| `githooks/pre-commit` | 加检查：动了代码/设计文档却没动 `docs/changes/` 时提醒（默认不拦） |
+| `D:\SeelAI\DSHWS\AGENTS.md` | 我的工作区上下文写入同一条规矩（不在本仓库） |
+
+## 验证
+
+规矩能被 Cursor 读到（每个会话都注入）：
+
+```powershell
+Get-Content .cursor\rules\change-records.mdc -TotalCount 4
+# --- / description: Miracii 的改动登记规矩…… / alwaysApply: true / ---
+```
+
+钩子的四个场景（调用方式与 git 一致：把 Git 的 `usr/bin` 放进 PATH 再跑钩子）：
+
+| 场景 | 暂存内容 | 期望 | 实测 |
+|---|---|---|---|
+| A | 只 `docs/NOTIFY.txt` | 提醒 + 放行 | `提醒——这次改了代码或设计文档，但没有动 docs/changes/ 的改动账`，exit 0 |
+| B | 同 A，`CHANGE_RECORDS_STRICT=1` | 提醒 + 中止 | 同上另加 `CHANGE_RECORDS_STRICT=1，按规矩中止本次提交`，exit 1 |
+| C | 设计文档 + `docs/changes/` | 静默放行 | 无提醒，exit 0 |
+| D | 只 `githooks/pre-commit` | 静默放行 | 无提醒，exit 0 |
+
+单元测试（钩子每次提交都会跑）：
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+# Ran 22 tests / OK (skipped=1)
+```
+
+Cursor 复核期间的文件守卫：复核前对 10 个文件取 SHA256，复核后**只有**
+`docs/changes/2026-10-13-notify.txt` 变化——它确实只动了允许它动的那一个文件。
+
+## 风险与未决
+
+- 规矩靠自觉：钩子默认只提醒，「算不算要登记」仍需人判断。
+- `.cursor/` 被 gitignore，**规则文件不进版本库**：换机器要重新放一份。规矩全文在
+  `docs/changes/README.txt`（已入库），所以不会整体丢失。
+- 复核方要另行安排：目前是「谁没写谁复核」，两个 agent 都在场时没有仲裁者。
+- 钩子的检查用纯 shell（不依赖 `grep`/`sed`），但它仍是启发式：`tests/` 下的纯测试重构
+  也会触发提醒。
+
+## 复核（Cursor / grok-4.7-high，2026-10-13）
+
+原文由复核方写在本规矩的第一条实例 `docs/changes/2026-10-13-notify.txt` 的
+「复核追加（Cursor）：规矩本身」一节（复核方只追加，不改别人的文件）。要旨六条：
+
+1. 作者写前四节能做，会停住的是两处：这次算不算要登记、复核交给谁；两处都靠自觉。
+2. `.cursor/rules/change-records.mdc` 与 `README.txt` 把「回应：」安在复核动作上，而模板与实例
+   都是作者用它答复——角色错位，容易把复核写成回应，或不敢动模板里的留空。
+3. `githooks/pre-commit` 不查记录。建议只拒绝一种情况：暂存区动了 `app/`、`tests/`、
+   `requirements.txt` 或 `docs/*.txt`（不含 `docs/changes/`）却没有新增或追加记录。
+4. 「重名加 `-2`」在两边都没提交时互相看不见；追加式合并没有规则；同一天又塞进「浮层默认关闭」
+   与「一次改动一条」冲突。建议后续另开 `-followup`，撞名用时刻。
+5. mdc 把「最近一条实例」钉死成 notify，后来者会照着那段复核对话写，而不是模板；SHA256 对照与
+   「复核要附可执行命令」只写在 README 的「建议」里，mdc 没有，于是复核容易写成纯散文。
+6. 规矩自身没有登记位置，只能塞进不相干的条目（这次就是）。建议：复核方追加「复核（谁 / 日期）」，
+   只有作者用「回应：」；实例链接改指 `_TEMPLATE.txt`；允许 `YYYY-MM-DD-ledger.txt` 专记这条规矩。
+
+## 回应：逐条处理
+
+| # | 处理 |
+|---|---|
+| 1 | **采纳**。`README.txt` 新增「要不要登记」：一句判据（改完别人要重跑或重读才知道行为变了）+ 要写/不用写对照表，并写明「拿不准就写」。复核方人选写明「不是作者的那一方」，找不到就写「暂无人复核」，不许自评 |
+| 2 | **采纳**。三处统一：复核方写「复核（谁 / 日期）」，**只有作者**写「回应：」；mdc 里把这条写成硬规则 |
+| 3 | **部分采纳**。检查逻辑与触发条件照办（实测见上表 A–D），但**默认只提醒不拦截**：误报（改注释、回滚、纯测试重构）一旦多起来，人就会习惯性 `--no-verify`，钩子随即失效——比没有更糟。留 `CHANGE_RECORDS_STRICT=1` 一键切严格，等提醒准确率稳定了再默认拦 |
+| 4 | **采纳**。同日同主题的后续追加到「后续」小节、不另开文件；撞名改用时刻 `-1530`，废除 `-2`；补「未提交怎么写、同一提交里落地怎么写」 |
+| 5 | **采纳**。mdc 删掉钉死的实例链接，只指向 `README.txt` 与 `_TEMPLATE.txt`；SHA256 与「复核附可执行命令」从「建议」提升为**复核方的默认动作**，mdc 里也写 |
+| 6 | **采纳**。本文件即 `YYYY-MM-DD-ledger.txt`，规矩自身的改动从此有位置；`README.txt` 与 mdc 都写明这条 |
+
+六条中五条全采纳，第三条采纳检查、不采纳「默认拒绝」的强度。
+
+## 后续
+
+- 首次实测提醒时，上一版钩子的功能检查依赖 `grep`；我从 PowerShell 直接调 `sh.exe` 复现
+  git 环境时 `grep` 不在 PATH，导致三个场景**假通过**。已把功能检查改为纯 shell `case`，
+  并按 git 的真实 PATH 重测（上表 A–D 为改后结果）。
