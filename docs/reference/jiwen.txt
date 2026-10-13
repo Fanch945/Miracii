@@ -1,0 +1,86 @@
+# 积温 jiwen：机制要点
+
+来源：`D:\SeelAI\ClaraShafiq\jiwen\jiwen.js`（871 行单文件、零依赖、MIT）＋ README ＋ 在线演示。
+**P1 要照着重写成 Python。** 逐行规格见同目录下 P1 阶段的提取结果；这里先记可查的要点。
+
+## 主张
+
+**不靠概率骰子**：用五个连续数值的确定性漂移替代"每 N 分钟 roll 一次"。同样的状态输入得到同样的行为输出——可复现、可调试、可回答"她为什么此刻开口"。实测全仓库 `jiwen/` 目录**零 `Math.random`**，主张属实。
+
+## 五轴（`jiwen.js` L30–36）
+
+| 轴 | 范围 | 含义 |
+|---|---|---|
+| connection 连接需求 | 0→1 | 多久没听到对方，想念在累积 |
+| pride 骄傲 | -1→+1 | 端着还是放软；**被冷落时防御性上升** |
+| valence 愉悦度 | -1→+1 | Russell (1980) 环状模型 |
+| arousal 唤醒度 | -1→+1 | 与 valence 正交 |
+| immersion 沉浸度 | 0→1 | 专注程度，也是**骄傲的缓冲垫** |
+
+## 阈值（L113–120，写死在 `Object.assign` 默认值里）
+
+```
+observation      0.20      注意到沉默，但还没想动
+considerContact  0.35      开始犹豫要不要开口
+forceContact     0.50      强制开口（pride 挡不住）
+prideBlock       0.50      骄傲高于此值 → 转为"找事做"
+valenceActivity -1.0       低至此值触发自我调节（-1.0 = 永不）
+arousalAgitation 0.7       高至此值也触发自我调节（躁动难坐）
+```
+
+## 三道闸门 + 两道并列闸门（L441–529）
+
+1. `connection ≥ 0.20` → `observation`（**内心念头，不发出**）
+2. `0.35 ≤ connection < 0.50`：
+   - `pride ≥ 0.50` 且 `immersion < 0.2` → `find_activity`（逃避/自我调节）
+   - `pride ≥ 0.50` 且 `immersion ≥ 0.2` → **什么都不发**（沉浸在事里，面子有缓冲）
+   - `pride < 0.50` → `contact`
+3. `connection ≥ 0.50` → 强制 `contact`（`forced: true`）
+
+并列：`valence ≤ valenceActivity` 或 `arousal ≥ arousalAgitation`，且 `immersion < 0.3` → `find_activity`。
+
+## 漂移（主公式 L266）
+
+```
+effectiveRate = baseRate × accelFactor × valenceMultiplier × max(0, immersionFactor)
+
+accelFactor     = pow(1 + connection, connectionAccel)   # L249-251，仅当距上次消息 ≥ accelDelay 分钟才启用
+immersionFactor = 1 - immersion × immersionDampenConnection   # L262-264
+单次 tick 上限 60 分钟                                        # L209
+```
+
+轴间制衡是这个引擎的性格所在：连接需求到阈值但骄傲高 → 不开口、转而找事做；低 valence + 高 arousal → 烦躁带刺；低 + 低 → 低落话少；等待拉高 arousal，同时锁定 valence 回归（想念越重，坏情绪越难消散）。
+
+## 对外接口
+
+| 接口 | 作用 |
+|---|---|
+| `tick(minutes)` | 推进并返回触发动作数组 |
+| `getPromptContext()` / `getStyleGuidance()` | 把数值翻成人话塞进 prompt（模型不需要知道 `connection=0.47`，只需要知道"你很别扭，想找她又拉不下脸"） |
+| `getTriggerTrace()` / `explainTrigger()` | **每个闸门回一个"被哪根轴挡的、差多少"**（L429–551，2026-09-15 新增，来自 issue #2） |
+| `getSagaBias` | 可选钩子（L212–221），接记忆系统的 Saga 情感主轴 |
+| `tone-grid.js` | **9 情绪簇 × 5 档 pride**（1=完全不端着 → 5=全副武装），缺格回退 tier 3 / neutral |
+| `simulate.js` | 写事件线、跑多组参数、出 CSV 轨迹对比（调参用） |
+
+## 调参史（`LOG.md`，比阈值本身更值钱）
+
+- `connectionAccel` **1.5 → 1.0**、`accelDelay` **30 → 45 分钟**——"两小时就强制开口"是她实际踩过的坑。
+- 曾有一个 `getShanghaiHour is not defined` 让 Agent Loop **永不执行**（她自述）。
+- 测试：实跑 `node jiwen.test.js` → **34 项通过**（README 写 29，文档滞后）。
+
+## 外部
+
+- npm：`@clarashafiq/jiwen` v0.4.0（**无 scope 的 `jiwen` 是 404**；演示页把包名写错了）
+- 演示：<https://clarashafiq.github.io/jiwen/>（五轴状态实时可视化，页面标注了阈值）
+
+## 我方取舍（P1 决定）
+
+**抄**：确定性替代随机；数值翻成人话再进 prompt；阈值起点（0.20/0.35/0.50/0.50 + 加速度 1.0 + 缓冲 45 分钟）；**决策轨迹从一开始就做**（她是后期补的）。
+
+**不抄**：`immersion` 那种角色特化的轴定义直接硬编码（要拆成"通用轴 + 人格特化轴"）；对外 npm 接口。
+
+**要加**：
+1. **轴空间可配**（通用轴 + `persona/<id>/` 特化槽位）；
+2. **一条 hesitation（犹豫）轴**，抬高 `contact` 阈值并给出"欲言又止"的样式指令——**用显式状态实现不确定度，不用随机数**，否则就退回骰子了；
+3. **`user_state` 输入**（由轻量模型从最近对话推断：忙碌/放松/低落），作为 `contact` 阈值的调制因子——把"角色中心"推向"关系中心"（参照 ProMemAssist 的批评）；
+4. **LLM 只做两件事**：把状态翻译成人话、对阈值做一次性微调；**积分永远由确定性代码做**。

@@ -129,6 +129,7 @@ APIkeys.txt           不入库。一行 provider=alias=secret
 | `docs/AGENT.txt` | 主动开口与以后的工具边界 |
 | `docs/NOTIFY.txt` | 主动开口的桌面提醒：焦点规则、两层实现、开关与测法 |
 | `docs/changes/` | 改动登记：每个行为改动一条记录，跨 agent 复核（规矩见 `changes/README.txt`） |
+| `docs/reference/` | 外部资料要点：参照仓库、积温引擎、记忆前沿。每条标注「已核实 / 未核实」（索引见 `reference/README.txt`） |
 | `packaging/android/` | WebView 客户端。模型仍在电脑上 |
 | `packaging/desktop/` | 窗口启动脚本 |
 

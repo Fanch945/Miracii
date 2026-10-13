@@ -1,0 +1,53 @@
+# ClaraShafiq 三仓库：结构与我方的取舍
+
+本地克隆（不在本仓库内，随时可读）：
+
+| 仓库 | 路径 | HEAD |
+|---|---|---|
+| MemoryConstellations | `D:\SeelAI\ClaraShafiq\MemoryConstellations` | `fb5db92d161e7cae6c47a1251e86c4e7c5fe1b62` |
+| jiwen | `D:\SeelAI\ClaraShafiq\jiwen` | `1c15a1f697816cd75e769f1df06278322293034a` |
+| sts2-companion-bridge | `D:\SeelAI\ClaraShafiq\sts2-companion-bridge` | `885efd0ee8e3c7abd94b053632dba1cc25eeda81` |
+
+三者均 MIT。热度差异很大：MemoryConstellations 127 commits（活跃到 2026-10-12）、jiwen 40 commits（到 09-15）、sts2-companion-bridge **只有 1 个 commit 且从未更新**。
+
+## MemoryConstellations：可审计记忆管线
+
+数据流：原始消息 → Scribe 原子观察（带精确引文）→ 待裁决证据池 → Claim 审查 → 星座 / Episode / Saga → **Facts / Status / Judgment 三条独立发布流** → 检索投影 → 聊天注入包。
+
+**原则（比实现更值得抄）**：模型只提议，**只有宿主程序在校验证据、版本、租约与 CAS 条件后才写正式表**；Judgment（第一人称看法）有独立证据门，失败不得覆盖旧值。
+
+### 已核实的关键实现
+
+| 项 | 位置 | 内容 |
+|---|---|---|
+| 情感权重字段 | `database.js` L174 | `memory_fragments.emotional_weight REAL DEFAULT 0.5` |
+| 六档锚定表 | `services/scribe.js` L282–297 | 0.0 纯事实 / 0.2 轻微倾向 / 0.4 有情绪色彩 / 0.6 明显 / 0.8 强烈 / 1.0 极端冲击；schema 强制必填（L234） |
+| 宿主兜底 | `services/scribe.js` L849 | `entry.emotional_weight ?? 0.3` |
+| 四档衰减 λ | `routes/memory-api.js` L352–389 | ew≥0.8→0.005（半衰期 138.63 天）/ ≥0.6→0.01（69.31）/ ≥0.4→0.02（34.66）/ else 0.04（17.33） |
+| 召回加成 | 同上 L383–384 | `min(0.3, ln(1+read_count)·0.08)`，rc≈41.5 饱和 |
+| 亮度与星等 | 同上 L385–389 | `brightness=min(1, decay+recallBonus)`；`mag=6.5-5.5·brightness`；`cooling`≤0.30、`frozen`≤0.12 |
+| 检索排序 | `services/librarian.js` L494–510 | `_rrf × decay × importance × novelty × wmBoost × recencyBoost`，`importance=0.4+ew·0.6`；**用 `noveltyPenalty` 给被读过的降权**——与亮度方向相反 |
+| 情感元数据的层级退化 | `consolidator.js` L313–317 | episode 的 weight = `0.7×意义分 + 0.3×(5+3×平均EW)`，情感只占三成；saga 只剩 8 类标签 `emotional_axis` |
+| 两个项目的缝合线 | `database.js` L649–651 | `memory_sagas.emotional_axis` 注释原文"**驱动 jiwen 偏置**"；jiwen 侧对应 `getSagaBias` |
+
+**全仓库仅 1 处随机**：`librarian.js` L517「随机浮现」（结果 <3 条时 40% 概率捞旧事）。
+
+## jiwen：确定性主动意识引擎
+
+见 [jiwen.txt](jiwen.txt)（单独成文件，P1 要照着重写）。
+
+## sts2-companion-bridge：读外部游戏状态
+
+四模块：`server/sts2-state.js`（Express + Bearer + 内存缓存 90s，**不落库**）、`server/game-context.js`（游戏 JSON → 自然语言，17 种画面）、`bridge/sts2_bridge.py`（Windows 侧轮询 + 变化驱动 + 30s 心跳）、`mod/`（给上游 STS2MCP 打补丁）。
+
+**注入点很讲究**：渲染结果 **unshift 到当前用户消息数组的第一段**，而不是 system prompt——理由是"让游戏状态跟对话轮次对齐，历史里的旧消息不受影响"。**Miracii 以后注入文档/软件状态可以照这个位置放。**
+
+**幻觉成因（读源码后的推断，未找到公开评测或批评）**：主因是知识库自述"只记 2 代新增，1 代就有的不重复"，而 2 代对旧卡做过**数值平滑重做**（其文档自记 Bash 8→10、Inflame +2→+3）——**拿 1 代的记忆答 2 代的题**；次因是牌组/抽弃牌堆**只给卡名**（`game-context.js` L71–75、L126–133）、手牌卡面**截断 50 字符**（L191）、知识库是二手攻略编译、`PROTOCOL.md` L43 明写**无 schema 校验**。**结论：这是可修的载荷缺口，不是"模型读不懂卡牌体系"。**
+
+## 我方取舍
+
+**抄**：模型提议 / 宿主裁决；指纹变化才重新裁决；Facts / Status / Judgment 三流分离；四档衰减与对数召回；**亮度与检索优先级分离**；情感元数据的"越往上越糊"分层；把外部状态注入当前用户消息段。
+
+**不抄**：星图可视化（没有前端，也不是瓶颈）；五星系 / 双星核心 / MCP 端点 / 可插拔后端（面向开源通用项目的负债）；Neo4j、每轮 embedding 检索（Amory 的证据表明相似度检索会污染上下文）。
+
+**术语提醒**：三个仓库里**"点云"零命中**（grep `点云|point.?cloud`）。她的实现是**星点 → 星座 → 星系**三级隐喻。转述时别用"点云权重"。

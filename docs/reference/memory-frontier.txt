@@ -1,0 +1,82 @@
+# 记忆系统前沿：对照与可落地结论
+
+来源：论文原文（arXiv / ACL Anthology / Semantic Scholar）与官方文档，逐条核实过。**所有数字均为论文自报，未做复现实验。**
+
+## Amory（确证存在，且几乎是我们架构的学术版）
+
+*Amory: Building Coherent Narrative-Driven Agent Memory through Agentic Reasoning*，Yue Zhou (UIC) + 三位 Amazon 作者，[arXiv 2601.06282](https://arxiv.org/abs/2601.06282) / [EACL 2026 Long](https://aclanthology.org/2026.eacl-long.183/)。**未开源。**
+
+- **数据结构**：episodic memory bank = 若干 *narrative thread*，每条含 `characters`、顶层 `headline`、带时间戳片段构成的层级树。
+- **MemInit / MemBinding**：超阈值后把历史切成叙事线；新话轮抽片段，判断是追加到既有线还是新建。
+- **Consolidation with Momentum**：叙事线"失活"（一轮内无新片段绑定）才触发巩固——**全文最便宜、最可迁移的一招**，用失活而非定时器决定何时压缩。
+- **Semanticization**：只把**边缘 trivia** 抽成 (s,p,o) 三元组；与主线因果纠缠的事实**必须留在情景记忆里**。
+- **检索**：**不用 embedding 相似度**，让 LLM 在 headline/characters 层级上推理选叶子节点；并行把 query 译成图查询。
+- **结果**：LoCoMo J-score 87.7 vs Mem0 59.9 / Zep 29.6 / A-MEM 37.5 / 全量上下文 86.1；p90 延迟 3.21s vs 6.08s。
+
+## 主流方案对照
+
+| 方案 | 核心结构 | 检索/注入 | 遗忘与巩固 | 已知缺点 |
+|---|---|---|---|---|
+| [MemGPT](https://arxiv.org/abs/2310.08560) / [Letta](https://docs.letta.com/agent-sdk/memory) | OS 式分层；Letta 现状：**记忆是 agent 自己的 git 仓库，entry 的 label 即路径** | `system/` 每轮进提示，其余只给文件树按需读 | **Dreaming**：后台 subagent 复盘并改写记忆 | 依赖 LLM 自主编辑，误写即持久 |
+| [Mem0](https://arxiv.org/abs/2504.19413) | 抽取式事实 + 向量库 | 向量相似 + 历史上下文 | LLM 直选 ADD/UPDATE/DELETE/NOOP | DELETE 不可逆、错误合并丢历史 |
+| [Zep/Graphiti](https://arxiv.org/abs/2501.13956) | 时序知识图，**双时间戳**：事件时间 T + 事务时间 T′ | 图-RAG + 社区分组 | 边显式带 `valid_at` / `invalid_at` | 对话省略、非事实表达 → 图稠密且噪 |
+| [A-MEM](https://arxiv.org/abs/2502.12110) | Zettelkasten 笔记 + 动态链接 | 向量召回 + 链接扩散 | **Memory Evolution**：新记忆回写改写旧记忆的上下文表示 | 回写会放大错误 |
+| [Generative Agents](https://arxiv.org/abs/2304.03442) | memory stream（自然语言全量） | 分 = recency + importance + relevance | **Reflection**：递归综合成高层结论 | 论文自述会 embellish（凭空编造事件） |
+| [MemoryBank](https://arxiv.org/abs/2305.10250) | 对话记忆 + 用户画像 | 相关性召回 | **Ebbinghaus `R=e^(−t/S)`**，每被回忆 S+1 且 t 归零 | 作者自称"高度简化的探索性模型" |
+
+## 谁真正解决"连续性"
+
+只有四条线索**以叙事/关系为主轴**，而非事实堆砌：**Amory**、[ZifaMem](https://arxiv.org/abs/2607.17564)、**Letta Dreaming**、**Generative Agents Reflection**。
+
+共同前提：必须有**离线巩固环节** + **一个凌驾于事实之上的叙事/关系层**——Miracii 的监督模型正在这个位置。
+
+## 落到「文件 + SQLite + 单个本地小模型」
+
+**高性价比（建议做）**
+
+1. **照搬 narrative thread 结构**（`headline` + `characters` + 带时间戳片段树）——纯文本 + 少量 LLM 调用，不需要图库和 embedding。
+2. **用「失活触发」替代定时压缩**——近乎零成本，直接解决过早总结（Miracii 现在靠"还在聊就不补 stm"打补丁）。
+3. **MemFS 思想**：`system/` 常驻，其余只给**标题目录**，让模型自己决定打开哪个——比关键词命中注入更省 token 也更准。
+4. **版本化代替覆盖**：SQLite 加 `valid_at` / `invalid_at` 两列即得 Graphiti 的双时间戳；冲突并存而非 DELETE。
+5. **MemoryBank 的 S 计数**：`recall_count` + `last_recalled` 两列。
+6. 冲突判定用四选一，但 **DELETE 一律软删除并保留旧值**。
+
+**不现实（建议砍）**：Neo4j/Cypher；每轮本地 embedding 检索（**Amory 自己的证据表明相似度检索会污染上下文**，它根本不用 embedding）；每轮多轮 agentic 推理（Amory 用 Claude 3.5 Sonnet 当 worker，本地小模型做不了复杂 binding）；全量 memory stream + 每轮三因子打分。
+
+## 两条必须记住的限定
+
+- **ZifaMem 的 11.4%**：是 4 个 backbone 汇总的**情感智能分**（95% CI 6.3–17.1），不是通用能力。同文另有两条同样重要、转述时最容易丢的结论：**与 Mem0 在预注册主指标上统计等价（±5 分内）**；**额外情绪状态机无任何端点增益**。
+  → 后者是对"给角色加一层情绪状态机"的**直接警告**：情绪状态若不与记忆/关系耦合，单独加一层在评测上不产生收益。
+- **Best Friends, Not Forever**（[arXiv 2607.28818](https://arxiv.org/abs/2607.28818)，2026-07-30）：2,008 段对话 / 27 personas，**trajectory accuracy 平均仅 44.4%**，user-state recall 接近四选一随机，**没有任何记忆方案或上下文条件能稳定解决**。
+  → 预防针：**连续性不是"加个记忆模块就好"的问题。**
+
+## Stellar Memory：同约束下的现成参考实现
+
+**不是论文**——是 MIT 许可的**本地 MCP 记忆服务器**（npm `stellar-memory` v2.0.0，仓库 `sangjun0000/stellar-memory-core`）。
+
+技术栈几乎就是"文件 + SQLite + 本地小模型"：`FTS5 关键词 + sqlite-vec KNN 经 RRF 融合`、本地 all-MiniLM-L6-v2、内联常驻缓存（200 条）、**冲突检测与解决工作流**、时序演化链、**程序性记忆衰减慢 3.3×**、后台 daemon 定期重算。
+
+它的 "Orbital Importance Model — 4-factor" 真实因子是 `recency / frequency / **impact** / relevance`（**不是**转述里的 "emotional salience / relational depth"）：
+`importance = 0.30·recency + 0.20·frequency + 0.30·impact + 0.20·relevance`；`distance = 0.1 + (1−importance)² · 99.9`；默认半衰期 72h。
+
+**未核实**：`impact` 具体怎么算、冲突解决的实际效果——只读了 README 与 registry 元数据，**未读源码、未跑通**。
+
+## 引用勘误表（第三方分析的 8 条引用）
+
+| # | 转述 | 裁决 |
+|---|---|---|
+| 1 | ZifaMem (2025) 11.4% | ✅ 存在，**年份错：2026-07-20**；11.4% 属实 |
+| 2 | Stellar Memory 四因子 | ⚠️ **不是论文**；因子名被编造（见上） |
+| 3 | ProMemAssist | ✅ 存在（UIST'25），但它是**智能眼镜上的 12 人用户研究**，建模的是**用户**的工作记忆——不同问题域 |
+| 4 | MuDoC | ✅ 存在且准确（AAAI-MAKE 2025） |
+| 5 | Best Friends, Not Forever (2026) | ✅ 标题年份完全一致 |
+| 6 | Deng et al. (2025) 综述 | ❌ **张冠李戴**：survey 是 **2023**；2024 那篇是 perspectives paper 不是 survey；"范式跃迁"是转述者的加工 |
+| 7 | Zhang et al. (2025) RAG→LTM | ✅ 存在（SIGIR-AP 2025 tutorial），但"introduces noise"**正文读不到，未取证** |
+| 8 | Conversing by Reading (2018) | ⚠️ 存在，**年份错：ACL 2019** |
+
+被源码直接证伪的一条："MemoryConstellations 的事实片段缺乏 emotional salience 元数据"——`scribe.js` 的抽取 schema 里就有 `emotional_weight`（见 `clarashafiq.txt`）。
+
+## 两条方法论教训
+
+1. **"查不到"曾被误当成"不存在"，实际是查错了库。** 检索工具 OpenAlex 对**所有**查询返回 `count=0`；做阳性对照（"attention is all you need"）也是 0 → 判定工具坏了，**丢弃它的全部阴性结果**。没这一步就会得出"Stellar Memory 不存在"的反向结论。
+2. **最危险的不是名字编错，而是"框架名对、方向对、具体字段是编的"**——照抄会写出对不上的代码。**检查本身也要被检查。**

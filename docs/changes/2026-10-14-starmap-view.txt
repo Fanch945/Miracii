@@ -1,0 +1,40 @@
+# 外置星图观察页
+
+- 日期：2026-10-14
+- 作者：Cursor
+- 关联提交：未提交
+- 关联设计文档：docs/STARMAP.txt
+
+## 背景
+
+`docs/STARMAP.txt` 写明应用内不做星图可视化。观察用的画面单独放在应用外面，读现有 `starmap.jsonl`，不改记忆。
+
+## 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `observe/starmap/view.py` | 只读投影：按种类分扇区，越新越靠近双星；同一指纹、同一天连线 |
+| `observe/starmap/index.html` | 本地页面：拖动、缩放、按种类开关、点星看星等 |
+| `observe/starmap/打开星图.bat` | 从仓库根启动上面的页面 |
+
+没有改 `app/`。聊天窗口里没有入口。
+
+## 验证
+
+```powershell
+python -c "import importlib.util; spec=importlib.util.spec_from_file_location('view', r'observe/starmap/view.py'); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); data=m.sky('miracii'); print(len(data['stars']), len(data['links']), sorted({s['kind'] for s in data['stars']}))"
+```
+
+结果：`33 22 ['episodic', 'impression', 'lore', 'semantic']`。
+
+浏览器打开 `http://127.0.0.1:7811/`：标题为「miracii · 33 颗活跃星 · 2026-10-14」，四类开关都在，双星为樊辰宇 / 樊辰昊，四色星点与同日连线可见。
+
+## 风险与未决
+
+- 连线只有「同一段」和「同一天」。没有因果或对立，因为索引里没有这种字段。
+- 无日期的设定星固定在外圈，不参与亮度，和 `docs/STARMAP.txt` 一致。
+- 页面不随心跳自动刷新，重新运行脚本才会重读索引。
+
+## 复核
+
+（留空。由另一个 agent 追加。）

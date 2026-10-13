@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>星图观察</title>
+    <style>
+      :root {
+        --ink: #100e0c;
+        --paper: #efe4d4;
+        --mute: #9a8d7d;
+        --gold: #c9a36a;
+        --line: rgba(232, 214, 186, 0.16);
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: var(--ink); color: var(--paper); }
+      body {
+        font-family: "Iowan Old Style", Palatino, "Songti SC", "Noto Serif SC", serif;
+        display: grid;
+        grid-template-columns: 280px 1fr;
+      }
+      aside {
+        border-right: 1px solid var(--line);
+        padding: 18px 16px;
+        overflow: auto;
+      }
+      h1 { margin: 0; font-size: 1.25rem; font-weight: 500; letter-spacing: 0.12em; }
+      p { color: var(--mute); font-size: 0.82rem; line-height: 1.55; }
+      label { display: flex; gap: 8px; align-items: center; font-size: 0.85rem; margin: 6px 0; }
+      .swatch { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+      #detail {
+        margin-top: 18px;
+        padding-top: 12px;
+        border-top: 1px solid var(--line);
+        font-size: 0.84rem;
+        line-height: 1.55;
+        white-space: pre-wrap;
+      }
+      #detail .k { color: var(--mute); }
+      canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+      canvas.drag { cursor: grabbing; }
+    </style>
+  </head>
+  <body>
+    <aside>
+      <h1>星图观察</h1>
+      <p id="blurb">只读。不进对话，也不改记忆。</p>
+      <div id="filters"></div>
+      <p>轨道越靠近双星，这条记忆越新。亮度和光晕跟情感权重、星等走。连线只表示同一段或同一天，不是因果关系。</p>
+      <div id="detail">点一颗星。</div>
+    </aside>
+    <canvas id="sky"></canvas>
+    <script>
+      const KINDS = [
+        { id: "lore", label: "设定", color: "#8a6d42" },
+        { id: "semantic", label: "事实", color: "#efe4d4" },
+        { id: "impression", label: "印象", color: "#e0a070" },
+        { id: "episodic", label: "情节", color: "#7f93b0" },
+      ];
+      const sky = document.getElementById("sky");
+      const ctx = sky.getContext("2d");
+      const filters = document.getElementById("filters");
+      const detail = document.getElementById("detail");
+      const blurb = document.getElementById("blurb");
+      const shown = Object.fromEntries(KINDS.map((k) => [k.id, true]));
+      let payload = { stars: [], links: [], core: [] };
+      let view = { x: 0, y: 0, z: 1 };
+      let drag = null;
+      let hover = null;
+
+      function resize() {
+        const r = sky.getBoundingClientRect();
+        sky.width = Math.max(1, Math.floor(r.width * devicePixelRatio));
+        sky.height = Math.max(1, Math.floor(r.height * devicePixelRatio));
+        draw();
+      }
+
+      function world(px, py) {
+        const w = sky.width / devicePixelRatio;
+        const h = sky.height / devicePixelRatio;
+        return {
+          x: (px - w / 2 - view.x) / view.z,
+          y: (py - h / 2 - view.y) / view.z,
+        };
+      }
+
+      function screen(x, y) {
+        const w = sky.width / devicePixelRatio;
+        const h = sky.height / devicePixelRatio;
+        return { x: w / 2 + view.x + x * view.z, y: h / 2 + view.y + y * view.z };
+      }
+
+      function visible(star) {
+        return shown[star.kind] !== false;
+      }
+
+      function hit(px, py) {
+        const p = world(px, py);
+        let best = null;
+        let bestD = 18 / view.z;
+        for (const star of payload.stars) {
+          if (!visible(star)) continue;
+          const d = Math.hypot(star.x - p.x, star.y - p.y);
+          if (d < bestD) {
+            best = star;
+            bestD = d;
+          }
+        }
+        return best;
+      }
+
+      function draw() {
+        const w = sky.width;
+        const h = sky.height;
+        ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = "#100e0c";
+        ctx.fillRect(0, 0, w / devicePixelRatio, h / devicePixelRatio);
+        const arm = Math.min(w, h) / devicePixelRatio * 0.42;
+        for (const ring of [0.28, 0.5, 0.72, 0.9]) {
+          const c = screen(0, 0);
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, ring * arm * view.z, 0, Math.PI * 2);
+          ctx.strokeStyle = "rgba(201,163,106,0.13)";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+        for (const link of payload.links) {
+          const a = payload.stars.find((s) => s.id === link.a);
+          const b = payload.stars.find((s) => s.id === link.b);
+          if (!a || !b || !visible(a) || !visible(b)) continue;
+          const pa = screen(a.x * arm, a.y * arm);
+          const pb = screen(b.x * arm, b.y * arm);
+          ctx.beginPath();
+          ctx.moveTo(pa.x, pa.y);
+          ctx.lineTo(pb.x, pb.y);
+          ctx.strokeStyle = link.kind === "same" ? "rgba(224,160,112,0.55)" : "rgba(239,228,212,0.18)";
+          ctx.lineWidth = link.kind === "same" ? 1.6 : 0.7;
+          ctx.stroke();
+        }
+        for (const star of payload.stars) {
+          if (!visible(star)) continue;
+          const p = screen(star.x * arm, star.y * arm);
+          const glow = 4 + (star.ew || 0) * 10;
+          const color = (KINDS.find((k) => k.id === star.kind) || KINDS[0]).color;
+          ctx.beginPath();
+          ctx.fillStyle = color;
+          ctx.globalAlpha = star.undated ? 0.45 : 0.35 + (star.brightness || 0) * 0.65;
+          ctx.arc(p.x, p.y, glow, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalAlpha = 1;
+          if (hover && hover.id === star.id) {
+            ctx.strokeStyle = "#c9a36a";
+            ctx.stroke();
+          }
+        }
+        const core = payload.core || [];
+        core.forEach((name, i) => {
+          const side = i === 0 ? -1 : 1;
+          const p = screen(side * 0.07 * arm, 0);
+          ctx.beginPath();
+          ctx.fillStyle = i === 0 ? "#c9a36a" : "#efe4d4";
+          ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#c9a36a";
+          ctx.font = "13px Palatino, serif";
+          ctx.textAlign = "center";
+          ctx.fillText(name, p.x, p.y + side * 22);
+        });
+      }
+
+      function show(star) {
+        if (!star) {
+          detail.textContent = "点一颗星。";
+          return;
+        }
+        const mag = star.mag == null ? "不计" : star.mag;
+        const bright = star.brightness == null ? "无日期" : star.brightness;
+        detail.innerHTML =
+          `<div>${star.label}</div>` +
+          `<div class="k">${star.file} #${star.block}</div>` +
+          `<div class="k">${star.kind} · 层级 ${star.level} · ew ${star.ew} · 想起 ${star.rc} 次</div>` +
+          `<div class="k">日期 ${star.created || "无"} · 亮度 ${bright} · 星等 ${mag}</div>`;
+      }
+
+      KINDS.forEach((kind) => {
+        const label = document.createElement("label");
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = true;
+        box.addEventListener("change", () => {
+          shown[kind.id] = box.checked;
+          draw();
+        });
+        const sw = document.createElement("span");
+        sw.className = "swatch";
+        sw.style.background = kind.color;
+        label.append(box, sw, document.createTextNode(kind.label));
+        filters.append(label);
+      });
+
+      sky.addEventListener("pointerdown", (event) => {
+        drag = { x: event.clientX, y: event.clientY, vx: view.x, vy: view.y };
+        sky.classList.add("drag");
+      });
+      sky.addEventListener("pointermove", (event) => {
+        const rect = sky.getBoundingClientRect();
+        if (drag) {
+          view.x = drag.vx + (event.clientX - drag.x);
+          view.y = drag.vy + (event.clientY - drag.y);
+          draw();
+          return;
+        }
+        hover = hit(event.clientX - rect.left, event.clientY - rect.top);
+        draw();
+      });
+      sky.addEventListener("pointerup", (event) => {
+        const rect = sky.getBoundingClientRect();
+        if (drag && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 4) {
+          hover = hit(event.clientX - rect.left, event.clientY - rect.top);
+          show(hover);
+        }
+        drag = null;
+        sky.classList.remove("drag");
+        draw();
+      });
+      sky.addEventListener("wheel", (event) => {
+        event.preventDefault();
+        const next = view.z * (event.deltaY > 0 ? 0.92 : 1.08);
+        view.z = Math.max(0.4, Math.min(3.2, next));
+        draw();
+      }, { passive: false });
+      window.addEventListener("resize", resize);
+
+      fetch("/api/sky")
+        .then((res) => res.json())
+        .then((data) => {
+          payload = data;
+          blurb.textContent = `${data.persona} · ${data.stars.length} 颗活跃星 · ${data.today}`;
+          resize();
+        })
+        .catch((err) => {
+          detail.textContent = String(err);
+        });
+    </script>
+  </body>
+</html>
