@@ -1,0 +1,59 @@
+# P1 第二步：积温的 default / template / 人格特化落点
+
+- 日期：2026-10-14
+- 作者：DSH（DeepSeek Harness agent）
+- 关联提交：本文件所在提交
+- 关联设计文档：[docs/reference/jiwen-spec.txt](../reference/jiwen-spec.txt)
+- 前置记录：[2026-10-14-warmth-engine.txt](2026-10-14-warmth-engine.txt)
+
+## 背景
+
+第一步做出了通用引擎，但参数只能写死在代码里。这一步把**旋钮交出来**：默认值在代码里（`defaults()`），
+可写的模板落到人格目录（`persona/<id>/memory/warmth.json`），人格特化因此**不用改代码**。
+
+## 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `app/warmth.py` | 新增配置层：`CONFIG_NAME` / `config_path()` / `template()` 重写 / `load_config()` / `write_template()` / `effective_config()`；命令行加 `--persona` / `--write-template` / `--overwrite` / `--show` |
+| `tests/test_warmth.py` | +13 项：缺文件、模板往返、不覆盖已有、部分覆盖、未知键、坏值、NaN、坏 JSON、**BOM 容错**、特化轴进引擎、无名轴、自定义 user_state、路径、旋钮清单 |
+| `persona/<id>/memory/warmth.json` | 生成物（`--write-template` 写出；`persona/miracii/` 已 gitignore，不入库） |
+
+设计要点：
+
+- **配置问题绝不让引擎起不来**——缺文件、坏 JSON、坏值一律退回默认，并在返回值里给出 `notes`。
+- **默认值就是模板值**：`--write-template` 写出的文件读回来**等于 `defaults()`**（示例特化轴放在 `_` 开头的键里，加载时忽略）。
+- **打错字要吵一声**：顶层键或字段名不认识时，只忽略那一项并提示（避免 `"rate"` 少了 s 却静默失效）。
+- **UTF-8 BOM 容错**：Windows 上用记事本 / PowerShell 存盘很容易带 BOM，按 `utf-8-sig` 读。
+
+## 验证
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+# Ran 110 tests ... OK (skipped=1)      ← 上一步 96 项
+
+.venv\Scripts\python.exe -m app.warmth --write-template
+# 模板：…\persona\miracii\memory\warmth.json
+
+.venv\Scripts\python.exe -m app.warmth --show
+# 打印当前生效的全部旋钮（thresholds / rates / user_state_lift / persona / extra_axes）
+```
+
+打错字的实测（临时文件，无 BOM）：
+
+```text
+rate: 顶层键不认识，已忽略
+Thresholds.observ: 不认识，已忽略
+accel_delay = 45.0        ← 保持默认，没有静默变成 10
+```
+
+## 风险与未决
+
+- 特化文件已生成，但**值仍等于默认**——真正的校准要等标注数据（P1 第四步的"想开口没开口"10–20 条）。
+- **还没接进运行时**：空闲 tick（启用 `tick_minutes`）、状态持久化、输出走 `speak` 通道都在下一步。
+- `tone-grid`（9 簇 × 5 档）与 `saga` / `circadian` 两个钩子仍未做。
+- 配置里没有"版本号"：将来若改了字段名，老配置文件里的旧键会变成"不认识"的提示——可接受，但要有心理准备。
+
+## 复核
+
+（留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）

@@ -5,11 +5,16 @@
 
 from __future__ import annotations
 
+import json
+import shutil
+import tempfile
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest import mock
 
-from app import warmth
+from app import persona, warmth
 
 
 def engine(**kwargs) -> warmth.Engine:
@@ -307,6 +312,122 @@ class ExtraAxisTests(unittest.TestCase):
         eng.state.extra["执念"] = 0.0
         eng.apply_delta(执念=0.4)
         self.assertAlmostEqual(eng.state.extra["执念"], 0.4)
+
+
+class ConfigTests(unittest.TestCase):
+    """人格特化配置：缺文件、缺键、坏值都不能让引擎起不来。"""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="warmth-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.path = self.root / "warmth.json"
+
+    def write(self, payload) -> None:
+        text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+        self.path.write_text(text, encoding="utf-8")
+
+    def test_missing_file_falls_back_to_defaults_silently(self):
+        config, notes = warmth.load_config(path=self.path)
+        self.assertEqual(notes, [])
+        self.assertEqual(config.thresholds, warmth.Thresholds())
+        self.assertEqual(config.rates, warmth.Rates())
+
+    def test_template_round_trips_to_defaults(self):
+        warmth.write_template(path=self.path)
+        config, notes = warmth.load_config(path=self.path)
+        self.assertEqual(notes, [])
+        self.assertEqual(config.thresholds, warmth.defaults().thresholds)
+        self.assertEqual(config.rates, warmth.defaults().rates)
+        self.assertEqual(config.extra_axes, ())  # 示例只在 _ 开头的键里，不进配置
+
+    def test_write_template_does_not_clobber_without_overwrite(self):
+        self.write({"thresholds": {"observation": 0.9}})
+        warmth.write_template(path=self.path)
+        config, _ = warmth.load_config(path=self.path)
+        self.assertEqual(config.thresholds.observation, 0.9)
+        warmth.write_template(path=self.path, overwrite=True)
+        config, _ = warmth.load_config(path=self.path)
+        self.assertEqual(config.thresholds.observation, 0.20)
+
+    def test_partial_file_keeps_the_rest_default(self):
+        self.write({"thresholds": {"consider_contact": 0.42}})
+        config, notes = warmth.load_config(path=self.path)
+        self.assertEqual(config.thresholds.consider_contact, 0.42)
+        self.assertEqual(config.thresholds.force_contact, 0.50)
+        self.assertEqual(notes, [])
+
+    def test_unknown_keys_are_reported_and_ignored(self):
+        self.write({"thresholds": {"nonsense": 1}, "unknown_group": {"a": 1}})
+        config, notes = warmth.load_config(path=self.path)
+        self.assertEqual(config.thresholds, warmth.Thresholds())
+        self.assertTrue(any("nonsense" in note for note in notes))
+        self.assertTrue(any("unknown_group" in note for note in notes))
+
+    def test_bad_values_fall_back_instead_of_crashing(self):
+        self.write({"thresholds": {"observation": "很高"}, "rates": {"accel_delay": None}})
+        config, notes = warmth.load_config(path=self.path)
+        self.assertEqual(config.thresholds.observation, 0.20)
+        self.assertEqual(config.rates.accel_delay, 45.0)
+        self.assertEqual(len(notes), 2)
+
+    def test_nan_in_config_is_refused(self):
+        self.write({"rates": {"connection_base": float("nan")}})
+        config, _ = warmth.load_config(path=self.path)
+        self.assertEqual(config.rates.connection_base, warmth.Rates().connection_base)
+
+    def test_broken_json_does_not_stop_the_engine(self):
+        self.write("{ this is not json")
+        config, notes = warmth.load_config(path=self.path)
+        self.assertEqual(config.thresholds, warmth.Thresholds())
+        self.assertTrue(notes and "读不了" in notes[0])
+
+    def test_a_utf8_bom_is_tolerated(self):
+        """Windows 上用记事本或 PowerShell 存盘很容易带 BOM，那不是坏文件。"""
+        payload = json.dumps({"thresholds": {"consider_contact": 0.44}}, ensure_ascii=False)
+        self.path.write_bytes(b"\xef\xbb\xbf" + payload.encode("utf-8"))
+        config, notes = warmth.load_config(path=self.path)
+        self.assertEqual(notes, [])
+        self.assertAlmostEqual(config.thresholds.consider_contact, 0.44)
+
+    def test_extra_axes_reach_the_engine(self):
+        self.write(
+            {
+                "extra_axes": [
+                    {"name": "执念", "kind": "driven", "source": "connection", "threshold": 0.1, "rate": 0.01}
+                ]
+            }
+        )
+        config, notes = warmth.load_config(path=self.path)
+        self.assertEqual(notes, [])
+        self.assertEqual(len(config.extra_axes), 1)
+        eng = warmth.Engine(config)
+        self.assertIn("执念", eng.state.extra)
+        eng.state.connection = 0.5
+        eng.tick(10)
+        self.assertGreater(eng.state.extra["执念"], 0.0)
+
+    def test_a_nameless_axis_is_reported_not_fatal(self):
+        self.write({"extra_axes": [{"kind": "driven"}]})
+        config, notes = warmth.load_config(path=self.path)
+        self.assertEqual(config.extra_axes, ())
+        self.assertTrue(any("缺 name" in note for note in notes))
+
+    def test_custom_user_state_lift_is_respected(self):
+        self.write({"user_state_lift": {"busy": 3.0}})
+        config, _ = warmth.load_config(path=self.path)
+        eng = warmth.Engine(config)
+        eng.set_user_state("busy")
+        self.assertAlmostEqual(eng.effective_thresholds()["contact"], 0.35 * 3.0)
+
+    def test_config_path_sits_next_to_schedule(self):
+        with mock.patch.object(persona, "folder", lambda persona_id=None: self.root):
+            self.assertEqual(warmth.config_path("x"), self.root / "memory" / warmth.CONFIG_NAME)
+
+    def test_effective_config_lists_every_knob(self):
+        shown = warmth.effective_config(warmth.defaults())
+        self.assertEqual(set(shown), {"thresholds", "rates", "user_state_lift", "persona", "extra_axes"})
+        self.assertIn("accel_delay", shown["rates"])
+        self.assertIn("hesitation_lift", shown["thresholds"])
 
 
 if __name__ == "__main__":

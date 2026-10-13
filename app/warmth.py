@@ -16,9 +16,11 @@
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Iterable
 
 # ── 通用轴的取值范围（与参照实现一致）──
@@ -126,29 +128,19 @@ def defaults() -> Config:
     return Config()
 
 
-def template() -> dict:
-    """给人填的特化模板：只列可以改的旋钮，键名与 `Config` 对齐。
+CONFIG_NAME = "warmth.json"
 
-    人格特化的落点见 P1 下一步（`persona/<id>/`）；本函数只提供形状。
+
+def template() -> dict:
+    """写给人填的特化模板（`warmth.json` 的形状）。
+
+    键名与 `Config` / `Thresholds` / `Rates` 的字段名一一对应；`_` 开头的键只是说明，
+    加载时会忽略。`extra_axes` 默认留空，示例放在 `_extra_axes_示例` 里——
+    这样「写模板 → 读回来」仍然等于默认配置。
     """
     return {
-        "thresholds": {
-            "observation": 0.20,
-            "consider_contact": 0.35,
-            "force_contact": 0.50,
-            "pride_block": 0.50,
-            "hesitation_lift": 0.10,
-        },
-        "rates": {
-            "connection_base": 0.0007,
-            "connection_accel": 1.0,
-            "accel_delay": 45.0,
-            "valence_lock_factor": 0.15,
-            "hesitation_rise": 0.004,
-            "hesitation_decay": 0.003,
-        },
-        "user_state_lift": {"active": 1.0, "busy": 1.35, "away": 1.1, "sleeping": 2.0},
-        "extra_axes": [
+        "_说明": "积温的人格特化旋钮。删掉任何一项都会退回默认值；整个文件删掉也没关系。",
+        "_示例_特化轴": [
             {
                 "name": "执念",
                 "kind": "driven",
@@ -156,11 +148,169 @@ def template() -> dict:
                 "low": 0.0,
                 "high": 1.0,
                 "source": "connection",
-                "threshold": 0.30,
+                "threshold": 0.3,
                 "rate": 0.001,
             }
         ],
+        "thresholds": {
+            "observation": 0.20,
+            "consider_contact": 0.35,
+            "force_contact": 0.50,
+            "pride_block": 0.50,
+            "valence_activity": -1.0,
+            "arousal_agitation": 0.7,
+            "hesitation_lift": 0.10,
+        },
+        "rates": {
+            "connection_base": 0.0007,
+            "connection_accel": 1.0,
+            "accel_delay": 45.0,
+            "immersion_decay": 0.010,
+            "pride_regress": 0.003,
+            "pride_defend_threshold": 1.0,
+            "pride_defend_target": 0.5,
+            "pride_defend_rate": 0.003,
+            "valence_regress": 0.005,
+            "valence_setpoint": 0.0,
+            "valence_lock_threshold": 1.0,
+            "valence_lock_factor": 0.15,
+            "valence_connection_drift_threshold": 0.0,
+            "valence_connection_drift_rate": 0.003,
+            "arousal_regress": 0.005,
+            "arousal_setpoint": 0.0,
+            "arousal_connection_rise_threshold": 0.30,
+            "arousal_connection_rise_rate": 0.002,
+            "arousal_lock_threshold": 1.0,
+            "arousal_lock_factor": 0.3,
+            "pride_arousal_conflict_rate": 0.002,
+            "hesitation_rise": 0.004,
+            "hesitation_decay": 0.003,
+            "hesitation_source_floor": 0.35,
+            "hesitation_source_ceiling": 0.50,
+        },
+        "user_state_lift": {"active": 1.0, "busy": 1.35, "away": 1.1, "sleeping": 2.0},
+        "extra_axes": [],
     }
+
+
+def config_path(persona_id: str | None = None) -> Path:
+    from . import persona
+
+    return persona.folder(persona_id) / "memory" / CONFIG_NAME
+
+
+def _coerce_fields(target, raw: dict, *, strict: bool = True) -> tuple[object, list[str]]:
+    """只认 dataclass 上已有的字段，并按原字段的类型转换。坏值跳过、退回默认。"""
+    if not isinstance(raw, dict):
+        return target, [f"{type(target).__name__}: 不是对象，已忽略"]
+    notes: list[str] = []
+    values = {}
+    for key, value in raw.items():
+        if key.startswith("_") or not hasattr(target, key):
+            if not key.startswith("_"):
+                notes.append(f"{type(target).__name__}.{key}: 不认识，已忽略")
+            continue
+        current = getattr(target, key)
+        if isinstance(current, bool):
+            values[key] = bool(value)
+        elif isinstance(current, int) and not isinstance(value, bool):
+            try:
+                values[key] = int(value)
+            except (TypeError, ValueError):
+                notes.append(f"{type(target).__name__}.{key}: {value!r} 不是数字，用默认")
+        elif isinstance(current, float):
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                notes.append(f"{type(target).__name__}.{key}: {value!r} 不是数字，用默认")
+            else:
+                values[key] = number if math.isfinite(number) else current
+        else:
+            values[key] = value
+    return replace(target, **values), notes
+
+
+def load_config(persona_id: str | None = None, *, path: Path | None = None) -> tuple[Config, list[str]]:
+    """读人格特化配置。缺文件、坏 JSON、坏值一律退回默认——配置问题不该让引擎起不来。
+
+    返回 `(config, notes)`；`notes` 列出被忽略的键与坏值，供命令行显示。
+    """
+    target = path or config_path(persona_id)
+    base = Config()
+    if not target.is_file():
+        return base, []
+    try:
+        # utf-8-sig：Windows 上用记事本 / PowerShell 存盘很容易带 BOM，那是无害的
+        raw = json.loads(target.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return base, [f"{target.name}: 读不了（{exc}），已用默认"]
+    if not isinstance(raw, dict):
+        return base, [f"{target.name}: 顶层不是对象，已用默认"]
+    notes: list[str] = []
+
+    # 顶层键打错字（"rate" 少了 s）会静默失效——宁可吵一声
+    known = {"thresholds", "rates", "user_state_lift", "extra_axes", "persona"}
+    notes += [
+        f"{key}: 顶层键不认识，已忽略" for key in raw if key not in known and not str(key).startswith("_")
+    ]
+
+    thresholds, extra = _coerce_fields(base.thresholds, raw.get("thresholds", {}))
+    rates, extra_rates = _coerce_fields(base.rates, raw.get("rates", {}))
+    notes += extra + extra_rates
+
+    lifts = raw.get("user_state_lift")
+    if isinstance(lifts, dict) and lifts:
+        clean = {str(k): float(v) for k, v in lifts.items() if isinstance(v, (int, float)) and math.isfinite(float(v))}
+        if len(clean) != len(lifts):
+            notes.append("user_state_lift: 有坏值被丢弃")
+        lifts = clean or base.user_state_lift
+    else:
+        lifts = base.user_state_lift
+
+    specs: list[AxisSpec] = []
+    for index, item in enumerate(raw.get("extra_axes") or []):
+        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+            notes.append(f"extra_axes[{index}]: 缺 name，已忽略")
+            continue
+        allowed = {f for f in AxisSpec.__dataclass_fields__}
+        fields = {k: v for k, v in item.items() if k in allowed}
+        try:
+            specs.append(AxisSpec(**fields))
+        except TypeError as exc:
+            notes.append(f"extra_axes[{index}]: {exc}，已忽略")
+
+    config = Config(
+        thresholds=thresholds,
+        rates=rates,
+        extra_axes=tuple(specs),
+        user_state_lift=lifts,
+        persona={**base.persona, **(raw.get("persona") or {})},
+    )
+    return config, notes
+
+
+def write_template(persona_id: str | None = None, *, path: Path | None = None, overwrite: bool = False) -> Path:
+    """把模板写到 `persona/<id>/memory/warmth.json`；已存在则不覆盖（除非 overwrite）。"""
+    target = path or config_path(persona_id)
+    if target.exists() and not overwrite:
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(template(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
+def effective_config(config: Config) -> dict:
+    """当前生效的全部旋钮——命令行显示用。"""
+    out = {
+        "thresholds": {f: getattr(config.thresholds, f) for f in config.thresholds.__dataclass_fields__},
+        "rates": {f: getattr(config.rates, f) for f in config.rates.__dataclass_fields__},
+        "user_state_lift": dict(config.user_state_lift),
+        "persona": dict(config.persona),
+        "extra_axes": [
+            {f: getattr(spec, f) for f in spec.__dataclass_fields__} for spec in config.extra_axes
+        ],
+    }
+    return out
 
 
 @dataclass
@@ -544,20 +694,41 @@ def run(engine: Engine, steps: Iterable[tuple[float, float | None]]) -> list[lis
 
 if __name__ == "__main__":
     import argparse
-    import json
 
     parser = argparse.ArgumentParser(description="积温引擎：干跑一条时间线，看闸门怎么动")
+    parser.add_argument("--persona", default=None)
     parser.add_argument("--minutes", type=float, default=20.0, help="每步推进多少分钟")
     parser.add_argument("--steps", type=int, default=12)
     parser.add_argument("--user-state", default="active")
+    parser.add_argument("--write-template", action="store_true", help="把特化模板写到 persona/<id>/memory/warmth.json")
+    parser.add_argument("--overwrite", action="store_true", help="配合 --write-template：覆盖已有文件")
+    parser.add_argument("--show", action="store_true", help="只显示当前生效的旋钮与配置问题")
     options = parser.parse_args()
 
-    engine = Engine()
+    from . import persona
+
+    pid = options.persona or persona.active_id()
+
+    if options.write_template:
+        target = write_template(pid, overwrite=options.overwrite)
+        print(f"模板：{target}")
+        raise SystemExit(0)
+
+    config, notes = load_config(pid)
+    if options.show:
+        print(json.dumps(effective_config(config), ensure_ascii=False, indent=2))
+        for note in notes:
+            print(f"· {note}")
+        raise SystemExit(0)
+
+    engine = Engine(config)
     engine.set_user_state(options.user_state)
+    print(f"persona {pid}  配置 {config_path(pid)}" + ("（未找到，用默认）" if not config_path(pid).is_file() else ""))
+    for note in notes:
+        print(f"· {note}")
     for index in range(options.steps):
         elapsed = (index + 1) * options.minutes
         triggers = engine.tick(options.minutes, minutes_since_message=elapsed)
-        line = f"{elapsed:6.0f} 分钟  {json.dumps(engine.snapshot(), ensure_ascii=False)}"
-        print(line)
+        print(f"{elapsed:6.0f} 分钟  {json.dumps(engine.snapshot(), ensure_ascii=False)}")
         if triggers:
             print(f"        → {engine.explain()}  |  {engine.style_guidance()}")
