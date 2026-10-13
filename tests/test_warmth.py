@@ -338,8 +338,18 @@ class ConfigTests(unittest.TestCase):
         config, notes = warmth.load_config(path=self.path)
         self.assertEqual(notes, [])
         self.assertEqual(config.thresholds, warmth.defaults().thresholds)
-        self.assertEqual(config.rates, warmth.defaults().rates)
         self.assertEqual(config.extra_axes, ())  # 示例只在 _ 开头的键里，不进配置
+        written = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(config.rates.accel_delay, written["rates"]["accel_delay"])
+
+    def test_the_template_does_not_pin_every_knob(self):
+        """模板写全了就等于把默认值钉死——以后改默认再也影响不到这个文件。"""
+        written = warmth.template()
+        self.assertLess(len(written["rates"]), len(warmth.Rates().__dataclass_fields__))
+        self.assertNotIn("immersion_decay", written["rates"])
+        default_rates = warmth.defaults().rates
+        for key, value in written["rates"].items():
+            self.assertEqual(getattr(default_rates, key), value, key)
 
     def test_write_template_does_not_clobber_without_overwrite(self):
         self.write({"thresholds": {"observation": 0.9}})
@@ -426,7 +436,10 @@ class ConfigTests(unittest.TestCase):
 
     def test_effective_config_lists_every_knob(self):
         shown = warmth.effective_config(warmth.defaults())
-        self.assertEqual(set(shown), {"thresholds", "rates", "user_state_lift", "persona", "extra_axes"})
+        self.assertEqual(
+            set(shown),
+            {"thresholds", "rates", "user_state_lift", "speak_cooldown_minutes", "reply_delta", "persona", "extra_axes"},
+        )
         self.assertIn("accel_delay", shown["rates"])
         self.assertIn("hesitation_lift", shown["thresholds"])
 
@@ -682,6 +695,152 @@ class LedgerTests(unittest.TestCase):
         after = hashlib.sha1((self.root / "memory" / "working.txt").read_bytes()).hexdigest()
         self.assertEqual(before, after)
         self.assertTrue(self.log.is_file())
+
+
+class FixTests(unittest.TestCase):
+    """首轮自查抓到的四个问题：只涨不落、开口太密、骄傲不防御、两条轴是摆设。"""
+
+    def test_pride_defends_by_default_once_she_starts_missing_him(self):
+        eng = warmth.Engine()  # 默认配置：pride_defend_threshold = 0.35
+        eng.state.connection = 0.40
+        eng.tick(60)
+        self.assertGreater(eng.state.pride, 0.0)
+
+    def test_pride_arms_and_then_hesitation_builds(self):
+        eng = warmth.Engine()
+        eng.state.connection = 0.36
+        for _ in range(6):  # 三小时：骄傲爬到防御目标
+            eng.tick(30)
+        self.assertGreaterEqual(eng.state.pride, 0.49)
+        for _ in range(6):  # 再往后：犹豫开始真的累积起来
+            eng.tick(30)
+        self.assertGreater(eng.state.hesitation, 0.0)
+
+    def test_hesitation_reaches_the_visible_threshold_in_a_long_silence(self):
+        eng = warmth.Engine()
+        eng.state.connection = 0.36
+        for _ in range(40):  # 二十小时没人说话
+            eng.tick(30)
+        self.assertGreater(eng.state.hesitation, 0.5)
+        self.assertIn("欲言又止", eng.style_guidance())
+
+    def test_valence_actually_sinks_while_waiting(self):
+        eng = warmth.Engine()
+        eng.state.connection = 0.6
+        for _ in range(3):
+            eng.tick(20)
+        self.assertLess(eng.state.valence, -0.05)  # 下沉必须强过回归，否则这条轴是摆设
+
+    def test_arousal_actually_climbs_while_waiting(self):
+        eng = warmth.Engine()
+        eng.state.connection = 0.45
+        for _ in range(15):
+            eng.tick(20)
+        self.assertGreater(eng.state.arousal, 0.5)
+
+    def test_the_valence_multiplier_can_speed_up_or_slow_down_the_wait(self):
+        def grow(**overrides):
+            eng = engine(**overrides)
+            eng.state.valence = -0.5
+            eng.tick(60)
+            return eng.state.connection
+
+        plain = grow()
+        boosted = grow(rates__valence_connect_boost=1.4, rates__valence_connect_boost_threshold=-0.2)
+        dampened = grow(rates__valence_connect_dampen=0.4, rates__valence_connect_dampen_threshold=-0.4)
+        self.assertGreater(boosted, plain)
+        self.assertLess(dampened, plain)
+
+
+class CooldownTests(unittest.TestCase):
+    """刚开口就不再重复：否则她一跨线就会把当天配额在一小时里烧完。"""
+
+    def test_a_fresh_speak_holds_the_next_one(self):
+        eng = warmth.Engine()
+        eng.state.connection = 0.60
+        eng.state.last_spoke_at = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+        eng.tick(1, now=datetime(2026, 10, 14, 12, 5, tzinfo=timezone.utc))
+        gates = [entry["gate"] for entry in eng.last_trace if entry["fired"]]
+        self.assertNotIn("force_contact", gates)
+        held = [entry for entry in eng.last_trace if entry["gate"] == "cooldown"]
+        self.assertTrue(held and held[0]["gap"] > 0)
+
+    def test_the_hold_lifts_once_the_cooldown_passes(self):
+        eng = warmth.Engine()
+        eng.state.connection = 0.60
+        eng.state.last_spoke_at = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+        eng.tick(1, now=datetime(2026, 10, 14, 12, 50, tzinfo=timezone.utc))
+        self.assertIn("force_contact", [entry["gate"] for entry in eng.last_trace if entry["fired"]])
+
+    def test_observation_is_not_held_by_the_cooldown(self):
+        eng = warmth.Engine()
+        eng.state.connection = 0.25
+        eng.state.last_spoke_at = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+        eng.tick(1, now=datetime(2026, 10, 14, 12, 5, tzinfo=timezone.utc))
+        self.assertIn("observation", [entry["gate"] for entry in eng.last_trace if entry["fired"]])
+
+    def test_a_zero_cooldown_disables_the_hold(self):
+        eng = engine()  # 先拿默认，再改 cooldown
+        eng.config = replace(eng.config, speak_cooldown_minutes=0.0)
+        eng.state.connection = 0.60
+        eng.state.last_spoke_at = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+        eng.tick(1, now=datetime(2026, 10, 14, 12, 5, tzinfo=timezone.utc))
+        self.assertIn("force_contact", [entry["gate"] for entry in eng.last_trace if entry["fired"]])
+
+    def test_note_spoke_is_persisted(self):
+        root = Path(tempfile.mkdtemp(prefix="warmth-spoke-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        path = root / warmth.STATE_NAME
+        stamp = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+        warmth.note_spoke(None, now=stamp, path=path)
+        loaded, _ = warmth.load_state(path=path)
+        self.assertEqual(loaded.last_spoke_at, stamp)
+
+
+class ReplyTests(unittest.TestCase):
+    """你回一句，等待就回落——而不是她自己开口就自我安慰。"""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="warmth-reply-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        (self.root / "memory").mkdir(parents=True, exist_ok=True)
+        patcher = mock.patch.object(persona, "folder", lambda persona_id=None: self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.state = self.root / "memory" / warmth.STATE_NAME
+
+    def test_a_reply_knocks_connection_down_and_lifts_the_mood(self):
+        state = warmth.State(connection=0.60, valence=-0.20, arousal=0.8, hesitation=0.9)
+        warmth.save_state(None, state, path=self.state)
+        snapshot = warmth.on_user_message(None, path=self.state)
+        self.assertAlmostEqual(snapshot["connection"], 0.35)
+        self.assertAlmostEqual(snapshot["valence"], -0.15)
+        self.assertAlmostEqual(snapshot["arousal"], 0.65)  # 躁动也被安抚
+        self.assertAlmostEqual(snapshot["hesitation"], 0.70)  # 不用再咽了
+        loaded, _ = warmth.load_state(path=self.state)
+        self.assertAlmostEqual(loaded.connection, 0.35)
+
+    def test_a_reply_does_not_stop_the_clock(self):
+        stamp = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+        state = warmth.State(connection=0.6)
+        state.last_tick = stamp
+        warmth.save_state(None, state, path=self.state)
+        warmth.on_user_message(None, path=self.state)
+        loaded, _ = warmth.load_state(path=self.state)
+        self.assertEqual(loaded.last_tick, stamp)  # 时间照常流逝
+
+    def test_reply_delta_is_configurable(self):
+        self.state.parent.joinpath(warmth.CONFIG_NAME).write_text(
+            json.dumps({"reply_delta": {"connection": -0.05}}), encoding="utf-8"
+        )
+        warmth.save_state(None, warmth.State(connection=0.60), path=self.state)
+        snapshot = warmth.on_user_message(None, path=self.state)
+        self.assertAlmostEqual(snapshot["connection"], 0.55)
+
+    def test_it_never_drags_connection_below_zero(self):
+        warmth.save_state(None, warmth.State(connection=0.1), path=self.state)
+        snapshot = warmth.on_user_message(None, path=self.state)
+        self.assertEqual(snapshot["connection"], 0.0)
 
 
 if __name__ == "__main__":

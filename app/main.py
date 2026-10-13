@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import APP_CHANNEL, APP_VERSION, clock, db, files, media, notices, persona, starmap, studio
+from . import APP_CHANNEL, APP_VERSION, clock, db, files, media, notices, persona, starmap, studio, warmth
 from .llm import LlmError, MODEL, stream_reply
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -386,6 +386,10 @@ async def chat(body: ChatRequest) -> StreamingResponse:
     clock.on_chat(sid)
     user_msg = db.add_message(sid, "user", stored)
     files.append_turn(sid, speaker, "user", stored.replace("\n", " "), user_msg["created_at"])
+    try:
+        warmth.on_user_message(persona.active_id())  # 积温：等待由"你出现了"解除
+    except Exception:
+        pass  # 积温出问题不该影响聊天本身
     history = _llm_history(sid, current_images=saved_images)
     scan_bits = []
     for item in history:

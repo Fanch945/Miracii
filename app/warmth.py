@@ -67,27 +67,37 @@ class Rates:
     immersion_decay: float = 0.010
     immersion_dampen_connection: float = 1.0
     pride_regress: float = 0.003
-    pride_defend_threshold: float = 1.0  # 1.0 = 永不
+    # 0.35 = 一旦进到"有点想找对方"的带里，骄傲就开始防御。
+    # 参照实现的出厂值是 1.0（永不防御），但那是**关掉**这个机制，不是调过参——
+    # 而"嘴硬、拉不下脸、转而找事做"正是这套设计最有性格的部分。
+    pride_defend_threshold: float = 0.35
     pride_defend_target: float = 0.5
     pride_defend_rate: float = 0.003
     valence_regress: float = 0.005
     valence_setpoint: float = 0.0
     valence_lock_threshold: float = 1.0  # 1.0 = 永不
     valence_lock_factor: float = 0.15  # 她调过：0.15 = 减慢 85%
+    # 等待下沉必须强过回归，否则这条轴永远只是摆设（见 docs/changes/2026-10-14-warmth-fixes.txt）
     valence_connection_drift_threshold: float = 0.0
-    valence_connection_drift_rate: float = 0.003
+    valence_connection_drift_rate: float = 0.012
+    # Valence → connection 增长倍率：轻度不开心时想要安慰，严重低落时自我封闭。
+    # 与参照一致，默认关闭；要用就在 warmth.json 里打开。
+    valence_connect_boost: float = 0.0
+    valence_connect_boost_threshold: float = -0.2
+    valence_connect_dampen: float = 0.0
+    valence_connect_dampen_threshold: float = -0.4
     arousal_regress: float = 0.005
     arousal_setpoint: float = 0.0
     arousal_connection_rise_threshold: float = 0.30
-    arousal_connection_rise_rate: float = 0.002
+    # 同样必须强过回归：0.0075 > 0.005，等待约五小时后才会真的坐不住
+    arousal_connection_rise_rate: float = 0.0075
     arousal_lock_threshold: float = 1.0
     arousal_lock_factor: float = 0.3
     pride_arousal_conflict_rate: float = 0.002
-    # 我们加的：犹豫的涨落
+    # 我们加的：犹豫的涨落（只要"想找他"且"端着"就一直在咽，没有上界）
     hesitation_rise: float = 0.004
     hesitation_decay: float = 0.003
-    hesitation_source_floor: float = 0.35  # connection 到这个带才长犹豫
-    hesitation_source_ceiling: float = 0.50  # 到了强制开口线，犹豫不再涨
+    hesitation_source_floor: float = 0.35  # connection 到这个带才谈得上犹豫
 
 
 @dataclass(frozen=True)
@@ -118,6 +128,19 @@ class Config:
     user_state_lift: dict[str, float] = field(
         default_factory=lambda: {"active": 1.0, "busy": 1.35, "away": 1.1, "sleeping": 2.0}
     )
+    # 两次主动开口之间的最短间隔（分钟）。0 = 不限制。
+    speak_cooldown_minutes: float = 45.0
+    # 对方回话时的一次性回落：等待应当由"你出现了"解除，
+    # 而不是她自己开了口就自我安慰（那样她会一路说下去，直到配额拦停）。
+    # 数值是暂定的：真正该多大要等标注数据（见 docs/changes/2026-10-14-warmth-fixes.txt）。
+    reply_delta: dict[str, float] = field(
+        default_factory=lambda: {
+            "connection": -0.25,
+            "valence": 0.05,
+            "arousal": -0.15,
+            "hesitation": -0.20,
+        }
+    )
     persona: dict[str, str] = field(
         default_factory=lambda: {"subject_name": "对方", "self_name": "你", "pronoun": "ta"}
     )
@@ -134,12 +157,16 @@ CONFIG_NAME = "warmth.json"
 def template() -> dict:
     """写给人填的特化模板（`warmth.json` 的形状）。
 
-    键名与 `Config` / `Thresholds` / `Rates` 的字段名一一对应；`_` 开头的键只是说明，
-    加载时会忽略。`extra_axes` 默认留空，示例放在 `_extra_axes_示例` 里——
-    这样「写模板 → 读回来」仍然等于默认配置。
+    **故意只写值得调的旋钮，不是全部。** 早先这里把三十来个速率全列上，
+    结果文件一生成就把默认值**钉死**了——以后改默认值再也影响不到这个人格，
+    而且还留下了漂移（引擎删掉的字段仍留在文件里被报"不认识"）。
+    想看当前生效的全部旋钮用 `--show`，那才是全量。
+
+    键名与 `Config` / `Thresholds` / `Rates` 的字段名一一对应；`_` 开头的键只是说明，加载时忽略。
     """
     return {
-        "_说明": "积温的人格特化旋钮。删掉任何一项都会退回默认值；整个文件删掉也没关系。",
+        "_说明": "积温的人格特化旋钮。只列值得改的；删掉任何一项都会退回默认值，整个文件删掉也没关系。"
+        "想看全部生效值：python -m app.warmth --show",
         "_示例_特化轴": [
             {
                 "name": "执念",
@@ -165,30 +192,18 @@ def template() -> dict:
             "connection_base": 0.0007,
             "connection_accel": 1.0,
             "accel_delay": 45.0,
-            "immersion_decay": 0.010,
-            "pride_regress": 0.003,
-            "pride_defend_threshold": 1.0,
+            "pride_defend_threshold": 0.35,
             "pride_defend_target": 0.5,
             "pride_defend_rate": 0.003,
-            "valence_regress": 0.005,
-            "valence_setpoint": 0.0,
-            "valence_lock_threshold": 1.0,
-            "valence_lock_factor": 0.15,
-            "valence_connection_drift_threshold": 0.0,
-            "valence_connection_drift_rate": 0.003,
-            "arousal_regress": 0.005,
-            "arousal_setpoint": 0.0,
+            "valence_connection_drift_rate": 0.012,
             "arousal_connection_rise_threshold": 0.30,
-            "arousal_connection_rise_rate": 0.002,
-            "arousal_lock_threshold": 1.0,
-            "arousal_lock_factor": 0.3,
-            "pride_arousal_conflict_rate": 0.002,
+            "arousal_connection_rise_rate": 0.0075,
             "hesitation_rise": 0.004,
             "hesitation_decay": 0.003,
-            "hesitation_source_floor": 0.35,
-            "hesitation_source_ceiling": 0.50,
         },
         "user_state_lift": {"active": 1.0, "busy": 1.35, "away": 1.1, "sleeping": 2.0},
+        "speak_cooldown_minutes": 45.0,
+        "reply_delta": {"connection": -0.25, "valence": 0.05, "arousal": -0.15, "hesitation": -0.20},
         "extra_axes": [],
     }
 
@@ -249,7 +264,7 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
     notes: list[str] = []
 
     # 顶层键打错字（"rate" 少了 s）会静默失效——宁可吵一声
-    known = {"thresholds", "rates", "user_state_lift", "extra_axes", "persona"}
+    known = {"thresholds", "rates", "user_state_lift", "extra_axes", "persona", "speak_cooldown_minutes", "reply_delta"}
     notes += [
         f"{key}: 顶层键不认识，已忽略" for key in raw if key not in known and not str(key).startswith("_")
     ]
@@ -257,6 +272,32 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
     thresholds, extra = _coerce_fields(base.thresholds, raw.get("thresholds", {}))
     rates, extra_rates = _coerce_fields(base.rates, raw.get("rates", {}))
     notes += extra + extra_rates
+
+    cooldown = raw.get("speak_cooldown_minutes")
+    if cooldown is not None:
+        try:
+            value = float(cooldown)
+        except (TypeError, ValueError):
+            notes.append(f"speak_cooldown_minutes: {cooldown!r} 不是数字，用默认")
+        else:
+            cooldown = value if math.isfinite(value) and value >= 0 else None
+            if cooldown is None:
+                notes.append("speak_cooldown_minutes: 坏值，用默认")
+    else:
+        cooldown = base.speak_cooldown_minutes
+
+    reply = raw.get("reply_delta")
+    if isinstance(reply, dict) and reply:
+        clean_reply = {
+            str(k): float(v)
+            for k, v in reply.items()
+            if isinstance(v, (int, float)) and math.isfinite(float(v))
+        }
+        if len(clean_reply) != len(reply):
+            notes.append("reply_delta: 有坏值被丢弃")
+        reply = clean_reply or base.reply_delta
+    else:
+        reply = base.reply_delta
 
     lifts = raw.get("user_state_lift")
     if isinstance(lifts, dict) and lifts:
@@ -284,6 +325,8 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
         rates=rates,
         extra_axes=tuple(specs),
         user_state_lift=lifts,
+        speak_cooldown_minutes=cooldown,
+        reply_delta=reply,
         persona={**base.persona, **(raw.get("persona") or {})},
     )
     return config, notes
@@ -305,6 +348,8 @@ def effective_config(config: Config) -> dict:
         "thresholds": {f: getattr(config.thresholds, f) for f in config.thresholds.__dataclass_fields__},
         "rates": {f: getattr(config.rates, f) for f in config.rates.__dataclass_fields__},
         "user_state_lift": dict(config.user_state_lift),
+        "speak_cooldown_minutes": config.speak_cooldown_minutes,
+        "reply_delta": dict(config.reply_delta),
         "persona": dict(config.persona),
         "extra_axes": [
             {f: getattr(spec, f) for f in spec.__dataclass_fields__} for spec in config.extra_axes
@@ -331,6 +376,7 @@ def state_to_dict(state: State) -> dict:
         "extra": dict(state.extra),
         "last_activity_at": state.last_activity_at.isoformat() if state.last_activity_at else None,
         "last_tick": state.last_tick.isoformat() if state.last_tick else None,
+        "last_spoke_at": state.last_spoke_at.isoformat() if state.last_spoke_at else None,
         "user_state": state.user_state,
     }
 
@@ -356,7 +402,7 @@ def state_from_dict(payload: dict) -> State:
             for k, v in extra.items()
             if isinstance(v, (int, float)) and math.isfinite(float(v))
         }
-    for name in ("last_activity_at", "last_tick"):
+    for name in ("last_activity_at", "last_tick", "last_spoke_at"):
         raw = payload.get(name)
         if isinstance(raw, str) and raw:
             try:
@@ -385,6 +431,29 @@ def save_state(persona_id: str | None, state: State, *, path: Path | None = None
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(state_to_dict(state), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return target
+
+
+def note_spoke(persona_id: str | None = None, *, now: datetime | None = None, path: Path | None = None) -> State:
+    """记下"她刚开口了"——冷却靠它。"""
+    stamp = now or _now()
+    state, _ = load_state(persona_id, path=path)
+    state.last_spoke_at = stamp
+    save_state(persona_id, state, path=path)
+    return state
+
+
+def on_user_message(persona_id: str | None = None, *, path: Path | None = None) -> dict:
+    """对方回话了：等待由"你出现了"解除。
+
+    由网页聊天链在存下 user 消息之后调用（`app/main.py`）。
+    不碰 `last_tick`——时间照常流逝，只是积温回落一截。
+    """
+    config, _ = load_config(persona_id)
+    state, _ = load_state(persona_id, path=path)
+    engine = Engine(config, state)
+    engine.apply_delta(**config.reply_delta)
+    save_state(persona_id, engine.state, path=path)
+    return engine.snapshot()
 
 
 def tick_minutes(persona_id: str | None = None) -> float:
@@ -609,6 +678,7 @@ class State:
     extra: dict[str, float] = field(default_factory=dict)
     last_activity_at: datetime | None = None
     last_tick: datetime | None = None
+    last_spoke_at: datetime | None = None
     user_state: str = "active"
 
     def axis(self, name: str) -> float:
@@ -702,10 +772,15 @@ class Engine:
         accel = 1.0
         if rates.connection_accel > 0 and minutes_since_message is not None and minutes_since_message >= rates.accel_delay:
             accel = math.pow(1.0 + self.state.connection, rates.connection_accel)
+        valence_multiplier = 1.0
+        if rates.valence_connect_dampen > 0 and self.state.valence < rates.valence_connect_dampen_threshold:
+            valence_multiplier = rates.valence_connect_dampen  # 严重低落 → 自我封闭，涨得更慢
+        elif rates.valence_connect_boost > 0 and self.state.valence < rates.valence_connect_boost_threshold:
+            valence_multiplier = rates.valence_connect_boost  # 轻度不开心 → 想要安慰，涨得更快
         dampen = 1.0
         if rates.immersion_dampen_connection > 0:
             dampen = max(0.0, 1.0 - self.state.immersion * rates.immersion_dampen_connection)
-        rate = rates.connection_base * accel * dampen
+        rate = rates.connection_base * accel * valence_multiplier * dampen
         low, high = AXIS_RANGES["connection"]
         self.state.connection = clamp(self.state.connection + rate * mins, low, high)
 
@@ -767,12 +842,17 @@ class Engine:
             state.arousal = clamp(net, low, high)
 
     def _drift_hesitation(self, mins: float, rates: Rates) -> None:
-        """犹豫：只在她"想说又没说"的那个带里长，过了强制线就退场。"""
+        """犹豫：只要她还想找他、又还端着，就一直在咽。
+
+        早先只在 `[floor, ceiling)` 这个带里长，而那个带只有两个多小时宽——
+        骄傲爬到防御目标时它已经结束了，犹豫永远到不了"欲言又止"的强度。
+        现在没有上界：**越久越咽回去**，这才符合它要表达的东西。
+        """
         state = self.state
         thresholds = self.config.thresholds
         low, high = AXIS_RANGES["hesitation"]
-        in_band = rates.hesitation_source_floor <= state.connection < rates.hesitation_source_ceiling
-        if in_band and state.pride >= thresholds.pride_block:
+        conflicted = state.connection >= rates.hesitation_source_floor and state.pride >= thresholds.pride_block
+        if conflicted:
             state.hesitation = clamp(state.hesitation + rates.hesitation_rise * mins, low, high)
         else:
             state.hesitation = clamp(state.hesitation - rates.hesitation_decay * mins, low, high)
@@ -803,6 +883,14 @@ class Engine:
             "valence_activity": thresholds.valence_activity,
             "arousal_agitation": thresholds.arousal_agitation,
         }
+
+    def cooldown_left(self) -> float:
+        """距上次开口还差多少分钟才允许再开口；`0` = 可以。"""
+        if self.state.last_spoke_at is None or self.config.speak_cooldown_minutes <= 0:
+            return 0.0
+        now = self.state.last_tick or self.state.last_spoke_at
+        elapsed = (now - self.state.last_spoke_at).total_seconds() / 60.0
+        return max(0.0, self.config.speak_cooldown_minutes - elapsed)
 
     def check(self) -> list[dict]:
         """逐闸门报"过了没有、被谁挡的、差多少"。
@@ -854,9 +942,27 @@ class Engine:
                 urgency=(state.connection - gate["observation"]) / span,
             )
 
+        held = False
+        cooldown = self.cooldown_left()
+        if opening is not None and opening["gate"] in {"contact", "force_contact"} and cooldown > 0:
+            # 冷却：刚开口没多久就不再重复。否则她一跨线就会每 20 分钟说一次，
+            # 把当天的配额在一小时里烧完。
+            trace.append(
+                _entry(
+                    "cooldown",
+                    False,
+                    f"想开口，但距上次开口只过了 "
+                    f"{self.config.speak_cooldown_minutes - cooldown:.0f} 分钟"
+                    f"（冷却 {self.config.speak_cooldown_minutes:g} 分钟）",
+                    gap=cooldown,
+                )
+            )
+            opening = None
+            held = True
+
         if opening is not None:
             trace.append(opening)
-        else:
+        elif not held:
             trace.append(
                 _entry(
                     "opening",

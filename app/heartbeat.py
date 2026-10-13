@@ -282,6 +282,8 @@ def run_warmth_tick(persona_id: str) -> dict:
         if result.get("style"):
             topic = f"{topic}。写法：{result['style']}"
         uttered = deliver_speak(persona_id, {"speak": True, "topic": topic}, packet, force=False)
+        if uttered:
+            warmth.note_spoke(persona_id)  # 冷却从"真的说出口"算起，不是从"想开口"算起
         _log("warmth spoke: " + (uttered[:80] if uttered else "(被挡下或没生成)"))
     return result
 
