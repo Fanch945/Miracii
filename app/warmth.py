@@ -844,32 +844,161 @@ def _parse_stamp(raw) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.astimezone()
 
 
-LABELS = ("should_speak", "ok_silent", "na")
+VERDICTS = ("should_speak", "should_stay_silent", "unsure")
+# 旧名字（P1 第一版）的别名，老标注仍能读
+VERDICT_ALIASES = {"ok_silent": "should_stay_silent", "na": "unsure", "shouldnt": "should_stay_silent"}
+
+# 维度辨析：这次是哪一根轴 / 哪一道闸门判错了。可多选。
+BLAMES = (
+    "connection",  # 连接需求涨得不对（太快 / 太慢）
+    "pride",  # 骄傲挡得不对（该挡没挡 / 不该挡却挡了）
+    "hesitation",  # 犹豫过头，或该犹豫却没犹豫
+    "valence",  # 心情没跟上 / 过头
+    "arousal",  # 躁动没跟上 / 过头
+    "immersion",  # "她忙不忙"判错了
+    "user_state",  # "他忙不忙"判错了（抬错了门槛）
+    "cooldown",  # 冷却太紧 / 太松
+    "threshold",  # 阈值本身该动
+    "timing",  # 时机不对，但说不出是哪根轴
+)
+
+EXPECTED_GATES = ("none", "observation", "contact", "force_contact", "find_activity")
+
+
+def _minutes_since_last_message(persona_id: str | None) -> float | None:
+    """尽力而为：标注时把"他多久没说话"一起记下来，分析时要用。"""
+    try:
+        from . import heartbeat
+
+        return heartbeat._minutes_since_message(persona_id or "")
+    except Exception:
+        return None
 
 
 def mark(
     persona_id: str | None = None,
     text: str = "",
     *,
-    label: str = "should_speak",
+    verdict: str = "should_speak",
+    blame: Iterable[str] = (),
+    expected: str | None = None,
+    tags: Iterable[str] = (),
     path: Path | None = None,
     now: datetime | None = None,
 ) -> dict:
-    """给此刻贴一条标注：她该开口 / 沉默是对的 / 说不清。
+    """给此刻贴一条标注。
 
-    这是阈值校准的唯一依据——先攒 10–20 条，再动那几个数。
+    三类结论（`verdict`）：**她该开口** / **她不该开口**（沉默是对的，或她不该此时插话）/
+    说不清。再加**维度辨析**（`blame`：哪根轴判错了）与**你期望它触发什么**（`expected`）。
+
+    标注是阈值校准唯一的输入，所以连"引擎当时怎么判的"一起记下来——
+    将来做数据处理，要比的是「引擎的判断」与「你的判断」这一对，缺了任何一半都没法回归。
     """
     stamp = now or _now()
+    config, _ = load_config(persona_id)
     state, _ = load_state(persona_id)
+    engine = Engine(config, state)
+    resolved = VERDICT_ALIASES.get(str(verdict), str(verdict))
+    chosen = [name for name in blame if name in BLAMES]
+    unknown = [name for name in blame if name not in BLAMES]
+    # 一次 check()，两条记录都从这里取——否则 gates 是这一刻的、explain 是上一次 tick 的，对不上
+    trace = engine.check()
     entry = {
         "kind": "mark",
         "at": stamp.isoformat(timespec="seconds"),
-        "label": label if label in LABELS else "na",
+        "verdict": resolved if resolved in VERDICTS else "unsure",
         "text": str(text or "").strip(),
+        "blame": chosen,
+        "expected": expected if expected in EXPECTED_GATES else None,
+        "tags": [str(tag).strip() for tag in tags if str(tag).strip()],
+        # 引擎当时的判断
+        "engine_gates": [item["gate"] for item in trace if item["fired"]],
+        "engine_explain": engine.explain(trace),
+        "cooldown_left": round(engine.cooldown_left(), 1),
+        "minutes_since_message": _minutes_since_last_message(persona_id),
         **state_to_dict(state),
     }
+    if unknown:
+        entry["blame_unknown"] = unknown
     append_log(persona_id, entry, path=path)
     return entry
+
+
+def stats(persona_id: str | None = None, *, days: float = 30, path: Path | None = None, now: datetime | None = None) -> dict:
+    """把标注汇总成可讨论的一张表——数据处理的第一步。"""
+    rows = [row for row in read_log(persona_id, days=days, path=path, now=now) if row.get("kind") == "mark"]
+    axes = (*_AXIS_FIELDS,)
+    summary: dict = {
+        "days": days,
+        "marks": len(rows),
+        "verdicts": {name: 0 for name in VERDICTS},
+        "blame": {name: 0 for name in BLAMES},
+        "expected": {name: 0 for name in EXPECTED_GATES},
+        "tags": {},
+        "by_verdict": {},
+        "engine_agreement": {"engine_spoke": 0, "engine_silent": 0},
+        "ready": len(rows) >= 10,
+    }
+    for row in rows:
+        summary["verdicts"][row.get("verdict", "unsure")] = summary["verdicts"].get(row.get("verdict", "unsure"), 0) + 1
+        for name in row.get("blame") or []:
+            summary["blame"][name] = summary["blame"].get(name, 0) + 1
+        if row.get("expected"):
+            summary["expected"][row["expected"]] = summary["expected"].get(row["expected"], 0) + 1
+        for tag in row.get("tags") or []:
+            summary["tags"][tag] = summary["tags"].get(tag, 0) + 1
+        spoke = any(gate in {"contact", "force_contact"} for gate in (row.get("engine_gates") or []))
+        summary["engine_agreement"]["engine_spoke" if spoke else "engine_silent"] += 1
+
+        bucket = summary["by_verdict"].setdefault(
+            row.get("verdict", "unsure"), {"n": 0, "axes": {name: [] for name in axes}, "since_message": []}
+        )
+        bucket["n"] += 1
+        for name in axes:
+            try:
+                bucket["axes"][name].append(float(row.get(name)))
+            except (TypeError, ValueError):
+                pass
+        if isinstance(row.get("minutes_since_message"), (int, float)):
+            bucket["since_message"].append(float(row["minutes_since_message"]))
+    for bucket in summary["by_verdict"].values():
+        bucket["mean"] = {name: (round(sum(values) / len(values), 4) if values else None) for name, values in bucket["axes"].items()}
+        bucket["since_message_mean"] = (
+            round(sum(bucket.pop("since_message")) / len(bucket["since_message"]), 1) if bucket["since_message"] else None
+        )
+        bucket.pop("since_message", None)
+        bucket.pop("axes", None)
+    return summary
+
+
+def render_stats(summary: dict) -> str:
+    lines = [f"近 {summary['days']:g} 天共 {summary['marks']} 条标注" + ("" if summary["ready"] else "（不足 10 条，先别急着调参）")]
+    if not summary["marks"]:
+        return lines[0]
+    lines.append("结论：" + "、".join(f"{name} {count}" for name, count in summary["verdicts"].items() if count))
+    blamed = [(name, count) for name, count in summary["blame"].items() if count]
+    if blamed:
+        lines.append("判错的维度：" + "、".join(f"{name} {count}" for name, count in sorted(blamed, key=lambda item: -item[1])))
+    wanted = [(name, count) for name, count in summary["expected"].items() if count]
+    if wanted:
+        lines.append("你期望触发：" + "、".join(f"{name} {count}" for name, count in sorted(wanted, key=lambda item: -item[1])))
+    if summary["tags"]:
+        top = sorted(summary["tags"].items(), key=lambda item: -item[1])[:6]
+        lines.append("常见情境：" + "、".join(f"{name}×{count}" for name, count in top))
+    both = summary["engine_agreement"]
+    lines.append(f"引擎当时：开口 {both['engine_spoke']} 次、沉默 {both['engine_silent']} 次")
+    for verdict, bucket in summary["by_verdict"].items():
+        mean = bucket["mean"]
+        shown = "  ".join(f"{name[:4]} {value:+.2f}" for name, value in mean.items() if value is not None)
+        since = f"  距他上次说话 {bucket['since_message_mean']:.0f}m" if bucket["since_message_mean"] else ""
+        lines.append(f"  {verdict}（{bucket['n']} 条）：{shown}{since}")
+    return "\n".join(lines)
+
+
+def export(persona_id: str | None = None, *, days: float = 30, path: Path | None = None, now: datetime | None = None) -> str:
+    """把台账原样导出成 JSON——留给后面的数据处理。"""
+    rows = read_log(persona_id, days=days, path=path, now=now)
+    return json.dumps({"persona": persona_id, "days": days, "count": len(rows), "rows": rows}, ensure_ascii=False, indent=2)
 
 
 def review(persona_id: str | None = None, *, days: float = 3, limit: int = 60, path: Path | None = None, now: datetime | None = None) -> str:
@@ -883,7 +1012,14 @@ def review(persona_id: str | None = None, *, days: float = 3, limit: int = 60, p
     if marks:
         lines.append("人工标注：")
         for row in marks[-limit:]:
-            lines.append(f"  {_short_time(row.get('at'))}  [{row.get('label')}] {row.get('text') or '（无说明）'}")
+            # 只用 GBK 能编的字符：这台机器的控制台是 GBK，一个 ⟵ 就够它崩
+            blame = "".join(f" <-{name}" for name in (row.get("blame") or []))
+            tags = "".join(f" #{tag}" for tag in (row.get("tags") or []))
+            expect = f" 期望:{row['expected']}" if row.get("expected") else ""
+            lines.append(
+                f"  {_short_time(row.get('at'))}  [{row.get('verdict', row.get('label', '?'))}] "
+                f"{row.get('text') or '（无说明）'}{blame}{expect}{tags}"
+            )
     lines.append("最近的动作：")
     for row in ticks[-limit:]:
         gates = "/".join(row.get("gates") or []) or "无触发"
@@ -1340,10 +1476,16 @@ if __name__ == "__main__":
     parser.add_argument("--show", action="store_true", help="只显示当前生效的旋钮与配置问题")
     parser.add_argument("--once", action="store_true", help="跑一次真实的空闲 tick（会落盘状态）")
     parser.add_argument("--state", action="store_true", help="显示已保存的状态与距下次到点还有多久")
-    parser.add_argument("--mark", default=None, help="给此刻贴一条人工标注（配合 --label）")
-    parser.add_argument("--label", default="should_speak", choices=list(LABELS), help="标注结论")
+    parser.add_argument("--mark", default=None, help="给此刻贴一条人工标注（配合 --verdict / --blame）")
+    parser.add_argument("--verdict", default="should_speak", choices=list(VERDICTS), help="标注结论")
+    parser.add_argument("--label", default=None, help="--verdict 的旧名字（兼容用）")
+    parser.add_argument("--blame", default=None, help=f"哪根轴判错了，逗号分隔：{','.join(BLAMES)}")
+    parser.add_argument("--expected", default=None, choices=list(EXPECTED_GATES), help="你期望它触发什么")
+    parser.add_argument("--tag", action="append", default=[], help="自由标签，可重复（如 --tag 深夜）")
     parser.add_argument("--review", action="store_true", help="列出最近的台账与人工标注")
-    parser.add_argument("--days", type=float, default=3.0, help="配合 --review：看最近几天")
+    parser.add_argument("--stats", action="store_true", help="把标注汇总成一张表（校准前的第一步）")
+    parser.add_argument("--export", action="store_true", help="把台账原样导出成 JSON")
+    parser.add_argument("--days", type=float, default=3.0, help="配合 --review / --stats / --export：看最近几天")
     parser.add_argument("--view", action="store_true", help="打印当前状态的 JSON（轴值/门槛/差距）")
     parser.add_argument("--watch", action="store_true", help="每几秒重画一行，实时看她现在的样子")
     parser.add_argument("--interval", type=float, default=5.0, help="配合 --watch：刷新间隔秒数")
@@ -1352,6 +1494,14 @@ if __name__ == "__main__":
     from . import persona
 
     pid = options.persona or persona.active_id()
+
+    if options.export:
+        print(export(pid, days=options.days))
+        raise SystemExit(0)
+
+    if options.stats:
+        print(render_stats(stats(pid, days=options.days)))
+        raise SystemExit(0)
 
     if options.view:
         print(json.dumps(view(pid), ensure_ascii=False, indent=2))
@@ -1367,7 +1517,19 @@ if __name__ == "__main__":
             raise SystemExit(0)
 
     if options.mark is not None:
-        print(json.dumps(mark(pid, options.mark, label=options.label), ensure_ascii=False, indent=2))
+        blame = [name.strip() for name in (options.blame or "").split(",") if name.strip()]
+        entry = mark(
+            pid,
+            options.mark,
+            verdict=options.label or options.verdict,
+            blame=blame,
+            expected=options.expected,
+            tags=options.tag,
+        )
+        print(json.dumps(entry, ensure_ascii=False, indent=2))
+        if entry.get("blame_unknown"):
+            print(f"· 这些维度名不认识，已忽略：{'、'.join(entry['blame_unknown'])}")
+            print(f"· 认识的维度：{'、'.join(BLAMES)}")
         raise SystemExit(0)
 
     if options.review:

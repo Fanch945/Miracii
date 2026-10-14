@@ -1,0 +1,86 @@
+# 标注 v2（含"不该开口"与维度辨析）＋ 复核流程化 ＋ WARMTH 文档写具体
+
+- 日期：2026-10-14
+- 作者：DSH（DeepSeek Harness agent）
+- 关联提交：本文件所在提交
+- 关联设计文档：[docs/WARMTH.txt](../WARMTH.txt)
+- 前置记录：[2026-10-14-warmth-ledger.txt](2026-10-14-warmth-ledger.txt)、[-dimensions.txt](2026-10-14-warmth-dimensions.txt)
+
+## 背景
+
+人的三条要求：
+
+1. **"把复核加入到日常工作流"**——前两轮复核抓出 6 条真问题（2 条是"声称实现了其实没接线"），
+   证明这个环节有效，但不该每次靠人临时想起来。
+2. **"文档还需要更具体：算法、维度影响的分析、使用与标注方式和原理"**。
+3. **"可以被 label 的应该还有『不应该此时主动对话』和维度上的辨析"**，之后要一起做数据处理。
+
+## 改了什么
+
+### A. 复核流程化
+
+| 文件 | 改动 |
+|---|---|
+| `D:\SeelAI\DSHWS\AGENTS.md` | 新增「复核是默认步骤，不是可选项」：五步闭环表 + 四条规矩 + 跳过要写理由 |
+| `docs/changes/README.txt` | 同一套规矩落到仓库里，附 `tools/review.ps1` 用法 |
+| `tools/review.ps1` | **新增**。一条命令做完三件最容易漏的事：记 SHA256、`--workspace` 指到本仓库、提示对方只增不改；跑完列出被改动的守卫文件（记录动了正常，`app/`、`tests/` 动了就是越界） |
+
+### B. 标注 v2（`app/warmth.py`）
+
+标签从"一个结论"扩成"结论 + 维度辨析 + 期望路径 + 自由标签"，并且**同时记下引擎当时的判断**——
+将来数据处理要比的是「引擎的判断」与「人的判断」这一对，缺一半就没法回归。
+
+| 字段 | 取值 |
+|---|---|
+| `verdict` | `should_speak`（该开口）/ `should_stay_silent`（**不该此时主动对话**，含"沉默是对的"与"插得不是时候"）/ `unsure` |
+| `blame`（可多选） | `connection` `pride` `hesitation` `valence` `arousal` `immersion` `user_state` `cooldown` `threshold` `timing` |
+| `expected` | `none` `observation` `contact` `force_contact` `find_activity` |
+| `tags` | 自由标签，便于分组（如 `深夜`、`他情绪低落`） |
+| 自动记录 | 六轴、`engine_gates`、`engine_explain`、`cooldown_left`、`minutes_since_message`、`user_state` 及其判断时间 |
+
+旧名 `ok_silent` / `na` 自动映射，老标注不失效。新增 `--stats`（汇总成人能看的一页：结论分布、
+**判错的维度排行**、按结论分组的六轴均值）与 `--export`（原样导出 JSON，给数据处理用）。
+
+### C. `docs/WARMTH.txt` 重写
+
+从 68 行长到 200 余行，补上人点名的四块：**算法**（六轴漂移方程 + 有效门槛 + 闸门优先级 + 回落规则）、
+**维度影响分析**（谁直接决定、谁背后使力、敏感度表、设计意图）、**观察命令**、**标注方式与原理**
+（三类结论、维度辨析词表、期望路径、怎么标、自动记了什么、攒够之后怎么处理）。
+
+## 验证
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+# Ran 180 tests ... OK (skipped=1)      ← 上一步 170 项
+```
+
+**在沙盒人格 `persona/test/` 上真跑了一遍**（不往真实人格的台账里塞假标注），当场抓到两个 bug：
+
+1. **`--review` 在 GBK 控制台直接崩**：`UnicodeEncodeError: 'gbk' codec can't encode character '\u27f5'`——
+   我在标注行里用了 `⟵`。改成 `<-`，并补了一条结构性测试：
+   **`review` / `render_stats` / `watch_line` 的输出必须都能 `encode("gbk")`**。
+   这台机器的控制台就是 GBK，这类字符以后还会有人写进来。
+2. **标注里记的 `engine_explain` 与 `engine_gates` 对不上**：`mark()` 调了 `engine.check()`
+   却让 `explain()` 去读 `self.last_trace`（那一刻是空的，于是写成"没有可比的差距"）。
+   改成一次 `check()` 同时喂给两处；修后 `engine_explain` 是"最接近的是 opening，还差 0.200"，
+   与 `engine_gates: []` 一致。
+
+其余实测通过：未知维度名收进 `blame_unknown` 并提示可用词表；`--stats` 给出结论分布、
+判错维度排行、常见情境与按结论分组的六轴均值（不足 10 条时明确写"先别急着调参"）；
+`--export` 输出带 `count` 与 `rows` 的 JSON。
+
+`tools/review.ps1` **未实测**（它的作用是调起另一个 agent，会产生一次真实的复核作业；
+下次有改动要复核时再跑）。
+
+## 风险与未决
+
+- **标注 schema 还会变**：这是第二版，等人真用一阵、我们一起看数据后再定形。变更时向后兼容读（旧字段名保留识别）。
+- **`--stats` 的统计口径是我定的**（按结论分组求轴均值、blame 直方图）。真正做数据处理时可能需要别的切法，
+  到时候直接读 `--export` 的 JSON 自己算，不必迁就这个命令。
+- `tools/review.ps1` 的 `-Protect` 默认只护 `app` 与 `tests`；要护别的目录得显式传。
+- 文档里的时间线数字来自"现行默认 + 20 分钟一拍 + 距上次消息 ≥45 分钟"的干跑，**真实运行会因
+  `user_state`、积压、冷却而与表略有出入**。
+
+## 复核
+
+（留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）

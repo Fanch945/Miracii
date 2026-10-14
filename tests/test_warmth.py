@@ -741,15 +741,96 @@ class LedgerTests(unittest.TestCase):
 
     def test_mark_records_the_verdict_and_the_state_at_that_moment(self):
         warmth.save_state(None, warmth.State(connection=0.44, hesitation=0.5), path=self.state)
-        entry = warmth.mark(None, "他刚说很难过的事，她该开口", label="should_speak", path=self.log, now=self.start)
-        self.assertEqual(entry["label"], "should_speak")
+        entry = warmth.mark(None, "他刚说很难过的事，她该开口", verdict="should_speak", path=self.log, now=self.start)
+        self.assertEqual(entry["verdict"], "should_speak")
         self.assertAlmostEqual(entry["connection"], 0.44)
         rows = warmth.read_log(path=self.log)
         self.assertEqual(rows[0]["text"], "他刚说很难过的事，她该开口")
 
-    def test_an_unknown_label_degrades_to_na(self):
-        entry = warmth.mark(None, "说不清", label="随便写的", path=self.log, now=self.start)
-        self.assertEqual(entry["label"], "na")
+    def test_an_unknown_verdict_degrades_to_unsure(self):
+        entry = warmth.mark(None, "说不清", verdict="随便写的", path=self.log, now=self.start)
+        self.assertEqual(entry["verdict"], "unsure")
+
+    def test_the_old_verdict_names_still_read(self):
+        """P1 第一版用的是 ok_silent / na，老标注不能被判成无效。"""
+        self.assertEqual(warmth.mark(None, "a", verdict="ok_silent", path=self.log, now=self.start)["verdict"], "should_stay_silent")
+        self.assertEqual(warmth.mark(None, "b", verdict="na", path=self.log, now=self.start)["verdict"], "unsure")
+
+    def test_a_mark_can_say_she_should_not_speak(self):
+        entry = warmth.mark(
+            None,
+            "他在开会，这时候插话很怪",
+            verdict="should_stay_silent",
+            blame=["threshold", "timing"],
+            tags=["白天", "他在忙"],
+            path=self.log,
+            now=self.start,
+        )
+        self.assertEqual(entry["verdict"], "should_stay_silent")
+        self.assertEqual(entry["blame"], ["threshold", "timing"])
+        self.assertEqual(entry["tags"], ["白天", "他在忙"])
+
+    def test_blame_names_are_checked_and_unknown_ones_kept_for_the_author(self):
+        entry = warmth.mark(None, "哪根轴不对", blame=["pride", "玄学"], path=self.log, now=self.start)
+        self.assertEqual(entry["blame"], ["pride"])
+        self.assertEqual(entry["blame_unknown"], ["玄学"])
+
+    def test_expected_gate_is_checked(self):
+        self.assertEqual(warmth.mark(None, "a", expected="force_contact", path=self.log, now=self.start)["expected"], "force_contact")
+        self.assertIsNone(warmth.mark(None, "b", expected="乱写", path=self.log, now=self.start)["expected"])
+
+    def test_a_mark_records_what_the_engine_thought_at_that_moment(self):
+        """数据处理要比的是「引擎的判断」与「人的判断」这一对，缺一半就没法回归。"""
+        warmth.save_state(None, warmth.State(connection=0.44, hesitation=0.5), path=self.state)
+        entry = warmth.mark(None, "记一笔", path=self.log, now=self.start)
+        self.assertIn("engine_gates", entry)
+        self.assertIn("engine_explain", entry)
+        self.assertIn("cooldown_left", entry)
+
+    def test_stats_summarizes_verdicts_and_blame(self):
+        warmth.mark(None, "该开口", verdict="should_speak", blame=["pride"], path=self.log, now=self.start)
+        warmth.mark(None, "不该开口", verdict="should_stay_silent", blame=["pride", "threshold"], path=self.log, now=self.start)
+        summary = warmth.stats(path=self.log, days=3, now=self.start)
+        self.assertEqual(summary["marks"], 2)
+        self.assertEqual(summary["verdicts"]["should_speak"], 1)
+        self.assertEqual(summary["blame"]["pride"], 2)
+        self.assertFalse(summary["ready"])  # 不足 10 条
+        text = warmth.render_stats(summary)
+        self.assertIn("2 条标注", text)
+        self.assertIn("pride 2", text)
+        self.assertIn("先别急着调参", text)
+
+    def test_stats_on_an_empty_ledger_is_honest(self):
+        summary = warmth.stats(path=self.log, now=self.start)
+        self.assertEqual(summary["marks"], 0)
+        self.assertIn("0 条标注", warmth.render_stats(summary))
+
+    def test_export_is_json_for_later_processing(self):
+        warmth.mark(None, "一条", path=self.log, now=self.start)
+        warmth.append_log(None, {"kind": "tick", "at": self.start.isoformat(), "gates": []}, path=self.log)
+        payload = json.loads(warmth.export(path=self.log, days=3, now=self.start))
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["rows"][0]["kind"], "mark")
+
+    def test_mark_records_an_explain_that_matches_its_gates(self):
+        """复核抓到过的同族问题：gates 是这一刻的、explain 却是上一次 tick 的。"""
+        warmth.save_state(None, warmth.State(connection=0.4, pride=0.8, immersion=0.5), path=self.state)
+        entry = warmth.mark(None, "记一笔", path=self.log, now=self.start)
+        self.assertEqual(entry["engine_gates"], [])
+        self.assertIn("blocked", entry["engine_explain"])  # 与 gates 同出一辙
+
+    def test_all_human_facing_output_survives_a_gbk_console(self):
+        """这台机器的控制台是 GBK——一个 '⟵' 就让 --review 崩过一次（真事，2026-10-14）。"""
+        warmth.mark(
+            None, "记一笔", verdict="should_stay_silent", blame=["pride"], tags=["深夜"], path=self.log, now=self.start
+        )
+        for text in (
+            warmth.review(path=self.log, days=3, now=self.start),
+            warmth.render_stats(warmth.stats(path=self.log, days=3, now=self.start)),
+            warmth.watch_line("x", now=self.start),
+        ):
+            with self.subTest(text=text[:20]):
+                text.encode("gbk")  # 编不出来就抛 UnicodeEncodeError
 
     def test_review_reports_both_kinds_of_rows(self):
         warmth.append_log(

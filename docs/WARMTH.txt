@@ -1,54 +1,263 @@
-# 积温：主动开口的引擎
+# 积温：算法、维度影响、观察与标注
 
-一句话：她**想不想找你**由六个连续数值决定——不是骰子，也不需要每拍问一次模型。
+她**想不想找你**由六个连续数值决定——不是骰子，也不需要每拍问一次模型。
 规格来源与取舍见 [`reference/jiwen.txt`](reference/jiwen.txt)；实现是 `app/warmth.py`。
 
-## 六个轴
+- 写给人看：本文。给人填的旋钮：`persona/<id>/memory/warmth.json`（`--show` 看全部生效值）。
+- 改动历史：`docs/changes/2026-10-14-warmth-*.txt`。
 
-| 轴 | 范围 | 什么时候动 |
-|---|---|---|
-| **connection** 连接需求 | 0 → 1 | 你多久没说话。前 45 分钟线性（0.0007/分钟），之后按 `(1+c)` 复利加速；**只有它驱动开口** |
-| pride 骄傲 | −1 → +1 | 一进"有点想找对方"的带（≥0.35）就开始防御性上升，朝 0.5 漂；平时回归 0 |
-| valence 愉悦度 | −1 → +1 | 等待让它缓慢下沉（0.012·c/分钟），你的回话把它拉回来 |
-| arousal 唤醒度 | −1 → +1 | 等待让人坐不住（connection ≥0.30 时 0.0075/分钟），到 0.7 触发"找点事做" |
-| immersion 沉浸度 | 0 → 1 | 她手上真的有事在消化时才抬起来（见下），高的时候连接需求涨得慢 |
-| **hesitation** 犹豫 | 0 → 1 | 只要"还想找你"且"还端着"就一直在咽；到 0.5 给出"欲言又止"的写法提示 |
+---
 
-## 时间线（现行默认、20 分钟一拍、你一直不说话）
+## 1. 算法
 
-| 沉默 | 发生什么 |
+### 1.1 时间怎么走
+
+| 项 | 规则 |
 |---|---|
-| 4 小时 40 分 | `observation`——"偶尔会想起对方"（纯内心，不发消息） |
-| **7 小时 20 分** | **`contact`——真的会开口**（仍要过安静时段 / 每日配额 / 正在聊 / 人工 hold / 冷却） |
-| 10 小时 | `force_contact`；骄傲爬到 0.5；躁动到 0.7 开始触发"找事做" |
-| 11 小时 20 分 | valence ≤ −0.3，真的开始低落 |
+| 一拍 | 心跳每 `schedule.txt` 的 `tick_minutes` 分钟调一次（现在是 20 分钟） |
+| 单拍上限 | 一次最多按 **60 分钟**推进（`max_tick_minutes`）。关机一夜不会一次性补满——她并没有在关机时"等着" |
+| 首次 | 第一次跑只记时间、不推进，否则每重启一次她就凭空老去 |
+| 基准 | "距你上次说话多久"读 `data/transcripts/<id>/*.jsonl` 里最后一条 `role=user` 的时间 |
+
+### 1.2 六个轴的漂移（每分钟）
+
+```
+# connection 连接需求  [0,1]   唯一直接驱动开口的轴
+accel   = (1 + c)^connection_accel        仅当 距上次消息 ≥ accel_delay 时启用，否则 = 1
+valMult = 1                               valence_connect_dampen / boost 默认 0（关闭）
+immMult = max(0, 1 - immersion × immersion_dampen_connection)
+c += connection_base × accel × valMult × immMult × 分钟数
+
+# immersion 沉浸度  [0,1]   只有"有事在消化"时才抬起（见 §2.4）
+i -= immersion_decay × min(分钟数, 距上次活动多久)    没有活动记录则不动
+i ≤ 0.01 且距上次活动 > 60 分钟 → 清空活动记录，i = 0
+
+# pride 骄傲  [-1,1]
+若 c ≥ pride_defend_threshold:  pride 朝 pride_defend_target 走，速率 pride_defend_rate
+否则:                            pride 朝 0 走，速率 pride_regress
+
+# valence 愉悦度  [-1,1]
+先从当前值朝 valence_setpoint 回归（速率 valence_regress；c ≥ valence_lock_threshold 时乘 valence_lock_factor）
+再被等待往下压:  valence -= valence_connection_drift_rate × 分钟数 × c
+
+# arousal 唤醒度  [-1,1]   两个力竞争
+回归力 = ±arousal_regress × 分钟数（朝 arousal_setpoint；valence ≥ arousal_lock_threshold 时乘 arousal_lock_factor）
+上升力 = arousal_connection_rise_rate × 分钟数       仅当 c ≥ arousal_connection_rise_threshold
+       + pride_arousal_conflict_rate × 分钟数        仅当 c ≥ consider_contact 且 pride ≥ pride_block
+回归力不会把值推过设定点（除非上升力在反方向拉）
+
+# hesitation 犹豫  [0,1]   我们加的一条
+若 c ≥ hesitation_source_floor 且 pride ≥ pride_block:  h += hesitation_rise × 分钟数
+否则:                                                   h -= hesitation_decay × 分钟数
+user_state = busy 时额外 += hesitation_rise × 0.5 × 分钟数
+```
+
+**默认值**（`--show` 可看当前生效值）：
+
+| 键 | 值 | 键 | 值 |
+|---|---|---|---|
+| `connection_base` | 0.0007 | `pride_defend_threshold` | 0.35 |
+| `connection_accel` / `accel_delay` | 1.0 / 45 分钟 | `pride_defend_target` / `_rate` | 0.5 / 0.003 |
+| `immersion_decay` | 0.010 | `pride_regress` | 0.003 |
+| `immersion_dampen_connection` | 1.0 | `valence_regress` | 0.005 |
+| `valence_connection_drift_rate` | 0.012 | `arousal_regress` | 0.005 |
+| `arousal_connection_rise_threshold` | 0.30 | `arousal_connection_rise_rate` | 0.0075 |
+| `hesitation_rise` / `_decay` / `_floor` | 0.004 / 0.003 / 0.35 | `pride_arousal_conflict_rate` | 0.002 |
+
+### 1.3 有效门槛（`user_state` 与犹豫会改门槛，不改轴）
+
+```
+lift = user_state_lift[user_state]        active 1.0 / away 1.1 / busy 1.35 / sleeping 2.0
+observation = 0.20 × lift
+contact     = 0.35 × lift + hesitation_lift(0.10) × hesitation
+force       = 0.50 × lift
+pride_block = 0.50                        不随 lift 变
+```
+
+> **一个必须知道的边界**：闸门判定顺序里 `force`（0.50）排在 `contact` 前面，所以**犹豫最多只能把开口推迟到强制线为止**。
+> `hesitation_lift ≥ 0.15` 之后就没有额外效果了（0.35 + 0.15 = 0.50 = 强制线）。
+
+### 1.4 闸门（开口类**三选一**，自我调节最多追加一条）
+
+| 条件 | 结果 | 附带 |
+|---|---|---|
+| `c ≥ force` | `force_contact` | `urgency = min(1, c − force)`；**无视骄傲与 immersion** |
+| `contact ≤ c < force` 且 `pride < 0.50` | `contact` | `urgency = c − contact` |
+| 同上区间 且 `pride ≥ 0.50` 且 `immersion < 0.2` | `find_activity` | 转而找事做 |
+| 同上区间 且 `pride ≥ 0.50` 且 `immersion ≥ 0.2` | 什么都不发 | 记一条 `blocked`，`gap = pride − 0.50` |
+| `observation ≤ c < contact` | `observation` | 只是内心状态，**不发消息**；`urgency` 按带内比例 |
+| `c < observation` | 无 | 记 `gap = observation − c` |
+
+**冷却**：若本来要 `contact` / `force_contact`，但距上次**真的说出口**不足 `speak_cooldown_minutes`（45），
+改记一条 `cooldown`，`gap = 还差多少分钟`。
+
+**自我调节**：`immersion < 0.3` 且（`valence ≤ valence_activity` 或 `arousal ≥ arousal_agitation`）→ `find_activity`。
+默认 `valence_activity = −1.0` = 永不，`arousal_agitation = 0.7`。
+
+### 1.5 什么会让积温掉下来
+
+| 事件 | 效果 |
+|---|---|
+| **你回一句话** | `connection −0.25`、`valence +0.05`、`arousal −0.15`、`hesitation −0.20`（`reply_delta`，可配） |
+| 她真的开口 | 不回落积温，只开始 45 分钟冷却 |
+| 她"在忙" | connection 涨得慢（乘 `1 − immersion`），并缓冲骄傲阻挡 |
+| 时间 | 不流逝就不涨：单拍上限 60 分钟 |
+
+---
+
+## 2. 维度影响分析
+
+### 2.1 直接决定"说不说"的
+
+**只有 `connection`。** 其他五轴都不能让闸门通过，只能改**门槛**或**结果形态**。这条是刻意的：
+参照实现里唯一稳定的判据也是它，把开口判据摊到多个轴上会让行为不可预测。
+
+### 2.2 每个轴实际影响什么
+
+| 轴 | 直接门 | 间接影响 | 影响强度 |
+|---|---|---|---|
+| **connection** | 三选一的主判据 | — | **决定性** |
+| pride | `contact` 的否决权（0.35–0.50 带内） | 喂 hesitation；≥0.5 时与 connection 冲突，给 arousal 升温（+0.002/分钟） | 大：能把开口变成"找事做"或"憋着" |
+| hesitation | —（只抬门槛） | 每 1.0 抬高 `contact` 0.10；≥0.5 时改写法提示（"欲言又止"） | 中：在当前默认下最多推迟到强制线 |
+| immersion | — | **乘** connection 增速（`1−i`）；缓冲骄傲阻挡（`i ≥ 0.2` 时纯憋着）；`i ≥ 0.3` 时压住自我调节 | 中：0.6 时涨速降到四成 |
+| arousal | — | ≥0.7 且不沉浸时触发 `find_activity`；≥0.5 时改写法（"坐不太住"） | 中 |
+| valence | — | ≤−0.4 时改写法（"低落话少"）；≥0.5 时配高 arousal 变"烦躁带刺" | 小（默认下只影响语气） |
+| user_state | — | **乘**三个门槛（1.0–2.0 倍） | 大，但它由模型判断，可能错 |
+| cooldown | 直接掐掉开口 | — | 大（45 分钟） |
+
+### 2.3 真实时间线（现行默认、20 分钟一拍、你一直不说话）
+
+| 沉默 | 事件 |
+|---|---|
+| 4 小时 40 分 | `observation`（"偶尔会想起对方"） |
+| **7 小时 20 分** | **`contact`——真的会开口** |
+| 10 小时 | `force_contact`；骄傲到 0.5；躁动到 0.7（自我调节开始触发） |
+| 11 小时 20 分 | `valence ≤ −0.3`（真的开始低落） |
 | 12 小时 | 犹豫到 0.5，"欲言又止"生效 |
 | 16 小时 30 分 | connection 封顶 1.0 |
 
-你回一句话，六轴立刻回落（`reply_delta`：connection −0.25、valence +0.05、arousal −0.15、犹豫 −0.20）。
-**等待由"你出现了"解除**，不是她自己开了口就自我安慰。
+### 2.4 改一个值会发生什么（敏感度）
 
-## 怎么观察她
+| 改动 | 后果 |
+|---|---|
+| `connection_base` ×2 | 开口时间大致减半（约 3 小时 40 分） |
+| `accel_delay` 45 → 120 | 前两小时完全不加速，整体更慢更"稳" |
+| `max_tick_minutes` 60 → 1440 | 关机一夜后她会按真实空档补积温（第二天开机可能直接想开口） |
+| `pride_defend_threshold` 0.35 → 0.50 | 骄傲只在真的要开口时才防御 → 开口更早，但随后长时间"憋着" |
+| `hesitation_lift` > 0.15 | **无额外效果**（见 §1.3 的边界） |
+| `user_state_lift.sleeping` 2.0 | 半夜门槛翻倍（配合既有的安静时段，双保险） |
+| `speak_cooldown_minutes` 45 → 0 | 一跨线就会每拍说一次，当天配额一小时内烧完 |
+
+### 2.5 设计意图（为什么长这样）
+
+- **确定性**：同样输入永远同样输出。能回答"她为什么不说话"，也能复现任何一次判断。
+- **轴之间互相制衡**：想找你又端着（connection↑ + pride↑）→ 不是"不说"，而是"找事做"；等待久了（arousal↑）→ 坐不住；等太久（valence↓ + arousal↑）→ 烦躁带刺。**性格来自这些互相抵消的力，不来自随机数。**
+- **数值不直接进 prompt**：模型看到的是"想找对方，但拉不下脸"，不是 `connection=0.47`。
+
+---
+
+## 3. 怎么观察她
 
 | 命令 | 看什么 |
 |---|---|
-| `python -m app.warmth --watch` | **实时一行**：六轴 + 进度条 + 此刻的闸门 + 距下拍到点 + 积压条数（Ctrl+C 退出） |
-| `python -m app.warmth --view` | 当前状态 JSON：六轴、**有效门槛**、每道闸门"差多少"、她此刻的内心话与写法提示 |
-| `python -m app.warmth --state` | 已落盘的状态 + 距下次到点还有多久 |
-| `python -m app.warmth --show` | 当前生效的全部旋钮（含被 `warmth.json` 改过哪些） |
-| `python -m app.warmth --review --days 7` | 台账：跨线、被挡、真正开口的话、以及你打的标注 |
-| `python -m app.warmth --once --since-message 600` | 干跑一拍，不等到点（会落盘） |
-| `python -m app.warmth --mark "这里她该开口" --label should_speak` | 人工标注（校准的唯一输入） |
-| `GET http://127.0.0.1:8000/api/warmth?persona=miracii` | 网页侧的同一份数据（只读） |
+| `python -m app.warmth --watch` | **实时一行**：六轴 + 进度条 + 此刻闸门 + 到点 + 积压（Ctrl+C 退出） |
+| `python -m app.warmth --view` | 当前状态 JSON：六轴、有效门槛、**每道闸门差多少**、她此刻的内心话与写法提示 |
+| `python -m app.warmth --state` | 落盘状态 + 距下拍到点 |
+| `python -m app.warmth --show` | 当前生效的全部旋钮 |
+| `python -m app.warmth --review --days 7` | 台账：跨线、被挡、真正说了什么、你的标注 |
+| `python -m app.warmth --once --since-message 600` | 干跑一拍（模拟"你 10 小时没说话"） |
+| `GET /api/warmth?persona=miracii` | 网页侧同一份数据（只读） |
 
-`--view` 里的 `gates` 就是"她为什么现在不开口"：每条都带 `gap`（还差多少）或 `urgency`（过了多少）。
+`--watch` 实例（真实数字）：
 
-## 她真的开口要过几道关
+```
+08:13:03  c 0.068 █···········  p +0.00 ██████······  v −0.03 ██████······  a +0.00 ██████······  i 0.00  h 0.00  | active | — | 到点 0m | 积压 18
+```
 
-积温只回答"想不想"。真正发出去还要过：安静时段、当日配额（`schedule.txt` 的 `quota_speak_per_day`）、
-5 分钟内正在聊、人工 hold、以及**两次开口之间的冷却**（`speak_cooldown_minutes`，默认 45 分钟）。
+`--view` 的 `gates` 就是"她为什么现在不开口"：每条带 `gap`（还差多少）或 `urgency`（过了多少）。
 
-## 文件落在哪
+> **前提**：数值由**心跳进程**推进，网页本身不跑心跳。要看它动，得开着 `.venv\Scripts\python.exe -m app.heartbeat`。
+
+---
+
+## 4. 标注：方式与原理
+
+### 4.1 为什么要你标
+
+阈值现在继承的是前辈**别人格**的调参起点（0.20 / 0.35 / 0.50）。它对不对，只有你能判：
+**同一个时刻，她该不该开口。** 没有人标，就没有校准的依据——引擎只能永远按别人的口味运行。
+
+### 4.2 三类结论（`--verdict`）
+
+| 值 | 什么时候用 |
+|---|---|
+| `should_speak` | 此刻她**该**开口，但没开（憋住了 / 门槛太高 / 冷却太紧） |
+| `should_stay_silent` | 此刻她**不该**开口：无论是"沉默是对的"，还是"她开口了但插得不是时候" |
+| `unsure` | 说不清（也算有用，能看出哪些情境本身就模糊） |
+
+旧名 `ok_silent` / `na` 仍能读（自动映射），老标注不会失效。
+
+### 4.3 维度辨析（`--blame`，可多选）
+
+**这次是哪一根轴 / 哪一道闸门判错了**——这是标注里最值钱的部分，因为它直接指向该拧哪个旋钮：
+
+| 值 | 意思 | 对应的旋钮 |
+|---|---|---|
+| `connection` | 涨得太快 / 太慢 | `connection_base`、`accel_delay` |
+| `pride` | 挡得不该，或该挡没挡 | `pride_defend_threshold` / `_target` / `_rate` |
+| `hesitation` | 犹豫过头，或该犹豫没犹豫 | `hesitation_rise` / `_decay`、`hesitation_lift` |
+| `valence` / `arousal` | 情绪没跟上 / 过头 | 对应的 `_regress`、`_connection_rise_rate`、`_drift_rate` |
+| `immersion` | "她忙不忙"判错了 | 积压映射、`immersion_dampen_connection` |
+| `user_state` | "他忙不忙"判错了（抬错门槛） | `user_state_lift`、推断提示词 |
+| `cooldown` | 冷却太紧 / 太松 | `speak_cooldown_minutes` |
+| `threshold` | 阈值本身该动 | 那三个开口线 |
+| `timing` | 时机不对，但说不出哪根轴 | — |
+
+### 4.4 你期望触发什么（`--expected`，可选）
+
+`none` / `observation` / `contact` / `force_contact` / `find_activity`。
+用于"不是该不该，而是**该由哪条路**"的场合：比如"这次该是 `find_activity`（她该去忙自己的），不是 `contact`"。
+
+### 4.5 怎么标
+
+```powershell
+# 她该开口却没开，问题出在骄傲和犹豫
+python -m app.warmth --mark "他刚说很难过的事" --verdict should_speak --blame pride,hesitation --tag 他情绪低落
+
+# 她不该在此时插话
+python -m app.warmth --mark "他在开会，这时候插话很怪" --verdict should_stay_silent --blame threshold,timing --tag 白天
+
+# 路数不对：该去忙自己的，而不是找他
+python -m app.warmth --mark "她该自己找点事做" --expected find_activity --blame arousal --tag 深夜
+
+# 回看
+python -m app.warmth --review --days 7
+```
+
+### 4.6 每条标注自动记了什么
+
+除了你说的话，还会记下**引擎当时的判断**——将来要比的是「引擎的判断」与「你的判断」这一对，缺一半就没法回归：
+
+六轴数值 · `engine_gates`（它当时触发了什么）· `engine_explain`（为什么没触发）· `cooldown_left` ·
+`minutes_since_message`（你多久没说话）· `user_state` 及其判断时间 · `blame` / `expected` / `tags`。
+
+### 4.7 攒够之后怎么处理
+
+```powershell
+python -m app.warmth --stats --days 30     # 汇总成人能看的一页
+python -m app.warmth --export --days 30    # 原样导出 JSON，给数据处理用
+```
+
+`--stats` 会给：三类结论各多少条、**判错的维度排行**、你期望触发的分布、常见情境标签、
+以及**按结论分组的六轴均值**（例如"你标 `should_speak` 的那些时刻，`connection` 平均只有 0.28"——
+那就说明开口线该往下调）。不足 10 条时会明确提示"先别急着调参"。
+
+**下一步（等人）：** 拿到 10–20 条后，我们一起看这批数据，再决定动哪个旋钮——那时候改的是
+`persona/miracii/memory/warmth.json`，不是代码。
+
+---
+
+## 5. 文件落在哪
 
 | 文件 | 作用 |
 |---|---|
@@ -56,13 +265,11 @@
 | `persona/<id>/memory/warmth-state.json` | 六轴 + 时间戳。删掉即从零开始 |
 | `persona/<id>/memory/warmth-log.jsonl` | 台账：`tick`（画像变化）/ `speak`（真的说了）/ `mark`（你的标注） |
 
-三份都是程序自己生成的派生文件，**不碰上面任何记忆与设定文件**，也都在 `.gitignore` 里。
+三份都是程序生成的派生文件，**不碰任何记忆与设定文件**，也都在 `.gitignore` 里。
 
-## 还没接通的
+## 6. 还没接通的
 
-- **`user_state`**：接上了（模型从最近对话判断 active/busy/away/sleeping），但只在连接需求逼近开口线、
-  且上一次判断过期时才问一次——不是每拍都问。
-- **`immersion`**：目前用"学习队列最近两小时内被动过"当"她真的在忙"。**积压是状态不是活动**：
-  真实人格队列里积着 18 条但 16 小时没动过，那种情况不计入。
-- **`tone-grid`**（9 簇 × 5 档语调网格）与 **`saga` / `circadian` 钩子**还没做。
-- **阈值仍未按 Miracii 校准**——需要真实跑几天、你在关键处标 10–20 条。
+- **`tone-grid`**（9 簇 × 5 档语调网格）：现在是简化版 `style_guidance`。
+- **`saga` / `circadian` 钩子**：参照实现里"长期叙事弧线"与"昼夜节律"对状态基线的引力，接口没做。
+- **`user_state` 的判断质量未验证**：没跑过真实对话，不知道模型判"他在忙"准不准。
+- **阈值未校准**：等 §4.7 的数据。
