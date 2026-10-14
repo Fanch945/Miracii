@@ -55,3 +55,33 @@ node --check app\static\warmth.js        # 通过
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-14）
+
+三条命令都在，`help` 列了它们，输出走 `textContent`，`warmth watch` 的间隔是 3 秒。`node --check app\static\console.js` 通过。`test_the_command_window_knows_the_warmth_commands` 只检查源码里有这几个字符串。我用临时 DOM 加载了这份 `console.js`（仓库里的文件没有改），把命令跑了一遍。
+
+`mark ok_silent 他在开会` 发出去的是 `verdict: should_speak`，说明是 `ok_silent 他在开会`。`mark should_stay_silnt 说明` 同样是 `should_speak`。词写对了的 `should_stay_silent` 才会记沉默。服务端 `mark(verdict="ok_silent")` 在临时台账上收成 `should_stay_silent`。`app/static/console.js` 241–244 行：第一个词不在三个名字里，就当成省略，结论改成 `should_speak`，那个词并进说明。别名和拼错都会记成「她该开口」。
+
+`warmth watch` 开着再输入 `mark`，定时器还在。画面先写出「已记下：[should_speak] 还在看」，下一次刷新盖成「# 积温 miracii」。`help` 也不停。`docs/WARMTH.txt` 180 行写的是换人格或跑别的命令也会停。`console.js` 303 行的 `mark` 分支没有 `stopWatch()`。
+
+节奏行打出来是「积压 0」。这次接口给的是 `backlog` 0、`backlog_total` 18。面板和 `watch_line` 写的是新鲜/总。
+
+最该先修：`app/static/console.js` 243 行。认不出的结论应拒绝这条命令，或把原词交给 `mark()`：`ok_silent` 会收成 `should_stay_silent`，未知收成 `unsure`。
+
+```powershell
+node --check app\static\console.js
+```
+
+临时 DOM 里三次 POST 分别是 `should_speak` / `ok_silent 他在开会`、`should_speak` / `should_stay_silnt 说明`、`should_stay_silent` / `他在开会`。未改 `app/`、`tests/`、`persona/`。
+
+### 回应（DSH / 2026-10-14，复核后）
+
+| 意见 | 处理 |
+|---|---|
+| `mark ok_silent 他在开会` 被记成 `should_speak`，那个词还并进说明；`should_stay_silnt` 同样。而服务端其实认识 `ok_silent` | **采纳，已修**。改成：第一个 token "像英文单词"（`/^[a-z_]+$/i`）就**原样交给服务端**——`ok_silent` 收成 `should_stay_silent`、拼错的收成 `unsure`；否则整句当说明、结论用默认。原来"不在三个名字里就当成没写"的分支已删 |
+| `warmth watch` 开着时 `mark` 与 `help` 都不停表，记下的那一行被下一次刷新盖掉；文档写的是"跑别的命令也会停" | **采纳，已修**。两条分支都补 `stopWatch()`；现在源码里 `stopWatch();` 出现 5 处（有断言守着） |
+| 节奏行只打新鲜积压（接口给 `0` / `18` 时显示「积压 0」） | **采纳，已修**。改成 `积压 新鲜/总`，与面板、`--watch` 一致 |
+| 最该先修：`console.js` 243 行 | 同上第一条 |
+| "只检查源码里有那几个字符串"的测试很弱 | **承认**。真正的交互要 DOM，而**我不打算为了它把 node 拉进测试依赖**——真实行为交给你用临时 DOM 验，我这边只守"修复没被回退"。这轮补了两条形状断言：认得结论词的逻辑在、`stopWatch` 至少 5 处、`backlog_total` 出现在节奏行 |
+
+修后：`node --check app\static\console.js` 通过；全库 `Ran 202 tests ... OK (skipped=1)`。

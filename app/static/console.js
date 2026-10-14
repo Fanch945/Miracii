@@ -195,7 +195,8 @@
     lines.push(`  门槛    观察 ${Number(t.observation).toFixed(2)}  开口 ${Number(t.contact).toFixed(2)}  强制 ${Number(t.force).toFixed(2)}`);
     const mins = Math.round((data.seconds_until_due || 0) / 60);
     const cd = data.cooldown_left > 0 ? `  冷却剩 ${data.cooldown_left} 分钟` : "";
-    lines.push(`  节奏    ${data.user_state}  每 ${data.tick_minutes} 分钟一拍，距下一拍 ${mins} 分钟  积压 ${data.backlog}${cd}`);
+    const total = data.backlog_total ?? data.backlog;
+    lines.push(`  节奏    ${data.user_state}  每 ${data.tick_minutes} 分钟一拍，距下一拍 ${mins} 分钟  积压 ${data.backlog}/${total}（新鲜/总）${cd}`);
     const recent = (data.recent || []).slice(-4);
     if (recent.length) {
       lines.push("");
@@ -238,10 +239,13 @@
   }
 
   async function markFromConsole(rest) {
-    const verdicts = ["should_speak", "should_stay_silent", "unsure"];
+    // 结论词只认"像个英文单词"的第一个 token，其余整句当说明。
+    // **认不出的词不吞掉**：原样交给服务端——别名 `ok_silent` 会收成 `should_stay_silent`，
+    // 拼错的会收成 `unsure`。原先一律当成 `should_speak`，还把那个词并进了说明（复核指出）。
     const first = rest[0] || "";
-    const verdict = verdicts.includes(first) ? first : "should_speak";
-    const text = (verdicts.includes(first) ? rest.slice(1) : rest).join(" ");
+    const looksLikeVerdict = /^[a-z_]+$/i.test(first);
+    const verdict = looksLikeVerdict ? first : "should_speak";
+    const text = (looksLikeVerdict ? rest.slice(1) : rest).join(" ");
     try {
       const res = await fetch("/api/warmth/mark", {
         method: "POST",
@@ -263,6 +267,7 @@
     const [cmd, ...rest] = line.split(/\s+/);
     const arg = rest.join(" ");
     if (cmd === "help") {
+      stopWatch(); // 文档说了"跑别的命令也会停"，那就每条分支都要停
       meta.textContent = "命令";
       writeView(
         [
@@ -301,6 +306,7 @@
       return;
     }
     if (cmd === "mark") {
+      stopWatch(); // 否则记下的那一行会被下一次 watch 刷新盖掉
       await markFromConsole(rest);
       return;
     }

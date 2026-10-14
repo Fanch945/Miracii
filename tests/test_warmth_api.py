@@ -96,6 +96,21 @@ class WarmthApiTests(unittest.TestCase):
             with self.subTest(needle=needle):
                 self.assertIn(needle, body)
 
+    def test_the_command_window_checks_the_verdict_word(self):
+        """复核第二轮：`mark ok_silent ...` 原先被当成"没写结论"，记成 should_speak。
+
+        真正的行为只能在 DOM 里跑（复核方用临时 DOM 验过）；这里钉住形状：
+        认不出的词要**原样交给服务端**，且跑别的命令要停掉 watch。
+        """
+        body = self.client.get("/static/console.js").text
+        self.assertIn("looksLikeVerdict", body)
+        self.assertNotIn('verdicts.includes(first) ? first : "should_speak"', body)
+        self.assertGreaterEqual(body.count("stopWatch();"), 5)
+
+    def test_the_command_window_shows_fresh_and_total_backlog(self):
+        body = self.client.get("/static/console.js").text
+        self.assertIn("backlog_total", body)
+
     def test_the_panel_never_writes_user_text_with_innerhtml(self):
         """复核实测：台账里用户写的标注文字走 innerHTML 时 `<img onerror>` 会执行。
 

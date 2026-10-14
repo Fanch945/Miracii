@@ -1180,6 +1180,24 @@ class ReviewFixTests(unittest.TestCase):
         self.assertAlmostEqual(eng.cooldown_left(), 5.0)  # 按这一拍算（闸门用）
         self.assertAlmostEqual(eng.cooldown_left(self.start + timedelta(minutes=15)), 30.0)  # 按真实现在算（显示用）
 
+    def test_the_view_and_the_mark_agree_about_the_cooldown(self):
+        """复核第二轮：`view()` 用的是现在，`mark()` 记下的却按上一拍算——同一时刻两个数。
+
+        实测过 50 分钟那一档：界面 0.0 触发 `force_contact`，标注里却写着冷却 45.0。
+        """
+        for minutes, expected in ((30.0, 15.0), (50.0, 0.0)):
+            with self.subTest(minutes=minutes):
+                state = warmth.State(connection=0.80, last_spoke_at=self.start, last_tick=self.start)
+                warmth.save_state(None, state, path=self.state)
+                moment = self.start + timedelta(minutes=minutes)
+                shown = warmth.view("x", now=moment)
+                entry = warmth.mark("x", "probe", now=moment, path=self.log)
+                self.assertAlmostEqual(shown["cooldown_left"], expected)
+                self.assertAlmostEqual(entry["cooldown_left"], expected)
+                self.assertEqual(entry["cooldown_left"], shown["cooldown_left"])
+                # 冷却没过完时，强制开口应当被挡住——两个视角必须一致
+                self.assertEqual(entry["engine_gates"], [g["gate"] for g in shown["gates"] if g["fired"]])
+
     def test_the_inner_voice_respects_the_lifted_thresholds(self):
         """复核：sleeping 把强制线抬到 1.0，内心话却还说「已经压不住了」。"""
         eng = warmth.Engine()

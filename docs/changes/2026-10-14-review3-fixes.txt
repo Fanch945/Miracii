@@ -46,3 +46,31 @@ node --check app\static\warmth.js        # 通过；且全文无 .innerHTML
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-14）
+
+1–9、11–14 和代码一致。全库 `Ran 199 tests in 3.159s，OK (skipped=1)`，`ReviewFixTests` 8 项通过。临时目录上：sleeping、connection 0.55 的闸门是 observation，内心话是「偶尔会想起对方」；`undo_user_message` 把 connection 从 0.35 收回 0.60。connection 0.10 回落后再撤，得到 0.25，就是记录里写的「夹到边界回不到原值」。推断失败没有 mock `set_user_state`：临时人格上 `_infer_user_state` 抛 `RuntimeError` 之后，`user_state` 从 sleeping 写成了 active。
+
+Edge 无头、视口 1100×780，打开的是仓库里的 `warmth.html`。`/api/warmth` 由临时端口返回，台账说明和内心话里放了 `<img onerror>` 和 `<b>`，没有写人格。`html` / `body` 的 `overflowY` 都是 `auto`，正文高 1251、视口 780，页面能往下滚。`window.__xss` 是 0，日志里没有 `img` 或 `b` 元素，标签按字面留在文字里。
+
+第 10 条的「显示用真实现在」只接到了 `view()`。`app/warmth.py` 650 行把现在传进 `cooldown_left`。`mark()` 929 行的 `check(now=stamp)` 用的也是现在，941 行记下的却是 `engine.cooldown_left()`，不传时钟，仍按 `last_tick`。开口后 50 分钟、这一拍还停在开口时：`view()` 是冷却 0.0、触发 `force_contact`；同一时刻 `mark()` 写下 `cooldown_left` 45.0，`engine_gates` 仍是 `force_contact`。按记下的 45 分钟，这次强制开口应该被冷却挡住。`test_the_cooldown_counts_down_with_the_real_clock` 只叫了方法，没有叫 `mark()`。
+
+第 13 条的测试在。它只断言 `console.js` 里有这几个字符串。命令的行为问题写在 `2026-10-14-warmth-console.txt` 的复核里。
+
+最该先修：`app/warmth.py` 941 行。改成 `engine.cooldown_left(stamp)`。
+
+```powershell
+.venv\Scripts\python.exe -c "import tempfile; from datetime import datetime, timedelta, timezone; from pathlib import Path; from unittest import mock; from app import persona, warmth; root=Path(tempfile.mkdtemp()); (root/'memory').mkdir(parents=True); start=datetime(2026,10,14,12,tzinfo=timezone.utc); now=start+timedelta(minutes=50); patch=mock.patch.object(persona,'folder', lambda persona_id=None: root); patch.start(); warmth.save_state(None, warmth.State(connection=0.80, pride=0.0, last_spoke_at=start, last_tick=start)); data=warmth.view('x', now=now); entry=warmth.mark('x','probe', verdict='should_speak', now=now); print('view', data['cooldown_left'], [g['gate'] for g in data['gates'] if g['fired']]); print('mark', entry['cooldown_left'], entry['engine_gates'])"
+```
+
+当时输出 `view 0.0 ['force_contact']` / `mark 45.0 ['force_contact']`。临时目录，未改 `persona/`。事后比对，`app/` 与 `tests/` 的 SHA256 与动手前一致。
+
+### 回应（DSH / 2026-10-14，复跑后）
+
+| 复跑意见 | 处理 |
+|---|---|
+| **14 条里 13 条一致**；第 10 条的"显示用真实现在"只接到了 `view()`，`mark()` 记下的 `cooldown_left` 仍按上一拍的 `last_tick`（941 行） | **采纳，已修**。`mark()` 改成 `engine.cooldown_left(stamp)`。复跑你给的命令：修前 `view 0.0 / mark 45.0`，修后 **`view 0.0 / mark 0.0`**，两边的 `engine_gates` 也一致。新增 `test_the_view_and_the_mark_agree_about_the_cooldown`：跑 30 分钟与 50 分钟两档，断言**两个视角的冷却与闸门完全相同**——比单独叫一次方法更能守住这条 |
+| 第 13 条的测试只断言 `console.js` 里有那几个字符串 | **承认，但不再加码**。命令窗口的真实行为只能在 DOM 里跑（你用临时 DOM 验过三次 POST）；我这边守的是"修复没被回退"。这轮又补了两条形状断言（见 `-warmth-console` 的回应） |
+| XSS 在无头 Edge 里没执行、页面能滚、`undo_user_message` 0.35→0.60、推断失败写成 active、夹到边界回不到原值 | 与实现一致，无异议。最后那条正是记录里写明的限制——`undo` 不是事务 |
+
+修后全库：`Ran 202 tests ... OK (skipped=1)`。

@@ -938,7 +938,7 @@ def mark(
         # 引擎当时的判断
         "engine_gates": [item["gate"] for item in trace if item["fired"]],
         "engine_explain": engine.explain(trace),
-        "cooldown_left": round(engine.cooldown_left(), 1),
+        "cooldown_left": round(engine.cooldown_left(stamp), 1),
         "minutes_since_message": _minutes_since_last_message(persona_id),
         **state_to_dict(state),
     }
