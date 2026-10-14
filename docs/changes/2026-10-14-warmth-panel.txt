@@ -74,3 +74,37 @@ http 127.0.0.1:7799
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-14）
+
+路由、顶栏 `<a class="ghost" href="/warmth">`、`DEFAULT_PORT = 7788`、`start_heartbeat()`、`review.ps1` 带 BOM 且语法 0 错，与记录一致。全库当时 `Ran 187 tests in 2.095s，OK (skipped=1)`。Edge 无头打开临时端口上的真实页面（`/api/warmth` 走只读 `view()`，标注 POST 在测试服务器里拦住，没有写入人格）：六轴画出了 connection 0.135；程序化点击后 POST 体是 `verdict=should_stay_silent`、`text=probe`，页面写「已记下（should_stay_silent）」。
+
+视口里够不到标注。`app/static/warmth.html` 第 9 行引入 `/static/app.css`，`app/static/app.css` 40–44 行把 `html, body` 设成 `height: 100%` 和 `overflow: hidden`。面板自己的样式没有把 overflow 改回来。1100×780 的窗口里视口高 685、正文高 1314，标注按钮 top 1065，`markVisible` 为 false。程序化 `click()` 能发请求，人滚不下去。
+
+节奏行上的冷却用的是 `cooldown_left`（`app/warmth.py` 1269 行的 `last_tick`）。开口后 40 分钟、状态里的 `last_tick` 还停在开口那一拍：报 45.0；下一拍 `tick` 之后才是 5.0。3 秒刷新不会让这个数往下走。
+
+`docs/WARMTH.txt` 里 `--once` 那一行（现 199 行）写成「干跑」。`app/warmth.py` 1560 行的 `--once` 调用 `ambient_tick`，会落盘。这条命令我没有跑。
+
+台账说明走 `innerHTML`（`app/static/warmth.js` 66–74 行）。接口返回的最近一条说明若含 `<img onerror>` 和 `<b>`，页面里 `window.__xss` 变为 1，日志下出现 `<b>` 元素。
+
+最该先修：`app/static/warmth.html` 第 9 行。对话页的 `overflow: hidden` 不要留在这个页面上，正文要能滚到标注表单。
+
+```powershell
+# 看计算样式：body / html 的 overflow，以及 #mark-btn 的 getBoundingClientRect().top 是否大于 innerHeight
+```
+
+同一时段工作区里另有未提交的 `app/static/console.js`、`tests/test_warmth_api.py`、`docs/WARMTH.txt`、`docs/BACKLOG.txt`（mtime 17:25–17:26），本复核只追加这四份记录。上面的 187 项是这些改动写入之前跑的。
+
+### 回应（DSH / 2026-10-14）
+
+（那四个未提交文件是**我**并行改的；守卫报 `!!` 是对的——**复核期间作者不该动代码**。）
+
+| 意见 | 处理 |
+|---|---|
+| **台账渲染走 `innerHTML`，`<img onerror>` 能执行**（`warmth.js` 66–74 行） | **采纳，已修**——**这条我完全没想到，是本次复核最重的一条**：台账里有用户自己写的标注文字，还有她的原话，两样都是不可信输入。改成 DOM 节点 + `textContent`，整页**不再出现 `.innerHTML`**（含两处错误提示与维度胶囊）。测试：`test_the_panel_never_writes_user_text_with_innerhtml` |
+| 1100×780 的窗口里滚不到标注表单：`app.css` 40–44 行把 `html, body` 设成 `height:100%` + `overflow:hidden` | **采纳，已修**。面板自己的 `<style>`（在 app.css 之后）把 `html, body` 改回 `height:auto; overflow:auto`。**这条我没有浏览器就不可能发现。** 测试：`test_the_panel_page_can_scroll_to_the_form` |
+| 节奏行的冷却用的是 `cooldown_left`，`last_tick` 不动它就不动 | **采纳，已修**（与 `-dimensions` 记录同一条修复）：`view()` 传真实现在，闸门仍按这一拍算 |
+| `docs/WARMTH.txt` 把 `--once` 写成「干跑」，可它会落盘 | **采纳，已修**。改写成「推进一拍并落盘（模拟…）——**它会写状态**」 |
+| 最该先修：`warmth.html` 第 9 行 | 同上第二条 |
+
+顺带记一条流程教训：`review.ps1` 的守卫在本次运行里报了 `app/static/console.js` 与 `tests/test_warmth_api.py`——那是我在同一时段并行提交的改动。守卫工作正常，**是我违反了"复核期间别动代码"这条隐含规矩**。以后要么等复核回来再改，要么在记录里预先声明。

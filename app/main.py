@@ -428,10 +428,11 @@ async def chat(body: ChatRequest) -> StreamingResponse:
     clock.on_chat(sid)
     user_msg = db.add_message(sid, "user", stored)
     files.append_turn(sid, speaker, "user", stored.replace("\n", " "), user_msg["created_at"])
+    # 这条消息存在 sid 上，积温就该落到同一个人的格子上——
+    # 直接写 active_id() 在多个人格之间会回落错人（复核指出）。
+    warmth_pid = sid if any(p["id"] == sid for p in persona.list_personas()) else persona.active_id()
     try:
-        # 这条消息存在 sid 上，积温就该落到同一个人的格子上——
-        # 直接写 active_id() 在多个人格之间会回落错人（复核指出）。
-        warmth.on_user_message(sid if any(p["id"] == sid for p in persona.list_personas()) else persona.active_id())
+        warmth.on_user_message(warmth_pid)
     except Exception:
         pass  # 积温出问题不该影响聊天本身
     history = _llm_history(sid, current_images=saved_images)
@@ -457,6 +458,12 @@ async def chat(body: ChatRequest) -> StreamingResponse:
         db.delete_message(user_msg["id"])
         files.retract_turn(sid, user_msg["created_at"])
         clock.restore(snap)
+        try:
+            # 这条消息被撤回了，等于"你并没有出现"——积温的回落也要还回去，
+            # 否则一次失败的发送会白白解除她的等待（复核指出）。
+            warmth.undo_user_message(warmth_pid)
+        except Exception:
+            pass
 
     async def event_stream():
         yield _sse("user", public_user)

@@ -22,64 +22,84 @@ function el(id) {
   return document.getElementById(id);
 }
 
+/* 一律用 DOM 节点 + textContent：
+   台账里有用户自己写的标注文字（还有她的原话），走 innerHTML 就是一个 XSS
+   ——复核实测 `<img onerror=...>` 能执行。这一页**不出现 innerHTML**。 */
+function node(tag, className, text) {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  if (text !== undefined && text !== null) element.textContent = String(text);
+  return element;
+}
+
 function bar(value, low, high) {
   const span = high - low;
   const pct = Math.max(0, Math.min(1, (value - low) / span)) * 100;
   const zero = ((0 - low) / span) * 100;
   const left = Math.min(pct, zero);
-  const width = Math.abs(pct - zero);
-  const cls = value >= 0 ? "pos" : "neg";
-  return (
-    `<div class="track"><div class="fill ${cls}" style="left:${left}%;width:${Math.max(width, 0.8)}%"></div>` +
-    (low < 0 ? `<div class="mark-line" style="left:${zero}%"></div>` : "") +
-    `</div>`
-  );
+  const width = Math.max(Math.abs(pct - zero), 0.8);
+  const track = node("div", "track");
+  const fill = node("div", "fill " + (value >= 0 ? "pos" : "neg"));
+  fill.style.left = left + "%";
+  fill.style.width = width + "%";
+  track.append(fill);
+  if (low < 0) {
+    const mark = node("div", "mark-line");
+    mark.style.left = zero + "%";
+    track.append(mark);
+  }
+  return track;
 }
 
 function renderAxes(axes) {
-  el("axes").innerHTML = AXES.map((a) => {
+  const host = el("axes");
+  host.replaceChildren();
+  for (const a of AXES) {
     const value = Number(axes[a.key] ?? 0);
-    const shown = a.low < 0 ? value.toFixed(2) : value.toFixed(3);
-    return (
-      `<div class="axis"><span class="name">${a.label}</span>` +
-      `<span class="val">${shown}</span>${bar(value, a.low, a.high)}</div>`
-    );
-  }).join("");
+    const row = node("div", "axis");
+    row.append(node("span", "name", a.label));
+    row.append(node("span", "val", a.low < 0 ? value.toFixed(2) : value.toFixed(3)));
+    row.append(bar(value, a.low, a.high));
+    host.append(row);
+  }
 }
 
 function renderGates(gates) {
-  el("gates").innerHTML = gates
-    .map((g) => {
-      const fired = g.fired ? " on" : "";
-      const tail = g.gap != null ? `还差 ${g.gap.toFixed(3)}` : g.urgency != null ? `强度 ${g.urgency.toFixed(2)}` : "";
-      return `<div class="gate${fired}"><span class="g">${g.fired ? "●" : "○"} ${g.gate}</span>` +
-        `<span class="d">${g.detail}${tail ? " · " + tail : ""}</span></div>`;
-    })
-    .join("");
+  const host = el("gates");
+  host.replaceChildren();
+  for (const g of gates) {
+    const row = node("div", "gate" + (g.fired ? " on" : ""));
+    row.append(node("span", "g", `${g.fired ? "●" : "○"} ${g.gate}`));
+    const tail = g.gap != null ? `还差 ${g.distance ?? g.gap}` : g.urgency != null ? `强度 ${g.urgency}` : "";
+    row.append(node("span", "d", `${g.detail}${tail ? " · " + tail : ""}`));
+    host.append(row);
+  }
 }
 
 function renderLog(rows) {
+  const host = el("log");
+  host.replaceChildren();
   if (!rows || !rows.length) {
-    el("log").textContent = "还没有记录。她还没醒过，或者一直没逼近门槛。";
+    host.append(node("div", null, "还没有记录。她还没醒过，或者一直没逼近门槛。"));
     return;
   }
-  el("log").innerHTML = rows
-    .slice()
-    .reverse()
-    .map((row) => {
-      const at = String(row.at || "").slice(5, 16).replace("T", " ");
-      if (row.kind === "mark") {
-        const blame = (row.blame || []).map((b) => ` <-${b}`).join("");
-        const tags = (row.tags || []).map((t) => ` #${t}`).join("");
-        return `<span class="m">${at} [标注] ${row.verdict}</span> ${row.text || ""}${blame}${tags}`;
-      }
-      if (row.kind === "speak") {
-        return `<span class="k">${at} [开口]</span> ${(row.text || "").slice(0, 80)}`;
-      }
+  for (const row of rows.slice().reverse()) {
+    const at = String(row.at || "").slice(5, 16).replace("T", " ");
+    const line = node("div", null);
+    if (row.kind === "mark") {
+      line.append(node("span", "m", `${at} [标注] ${row.verdict} `));
+      const blame = (row.blame || []).map((b) => ` <-${b}`).join("");
+      const tags = (row.tags || []).map((t) => ` #${t}`).join("");
+      line.append(node("span", null, `${row.text || ""}${blame}${tags}`));
+    } else if (row.kind === "speak") {
+      line.append(node("span", "k", `${at} [开口] `));
+      line.append(node("span", null, String(row.text || "").slice(0, 80)));
+    } else {
       const gates = (row.gates || []).join("/") || "无触发";
-      return `${at} [tick] c=${Number(row.connection ?? 0).toFixed(3)} ${gates}`;
-    })
-    .join("\n");
+      line.append(node("span", null, `${at} [tick] c=${Number(row.connection ?? 0).toFixed(3)} ${gates}`));
+    }
+    host.append(line);
+  }
 }
 
 function render(data) {
@@ -92,8 +112,9 @@ function render(data) {
     `观察 ${Number(t.observation).toFixed(2)} · 开口 ${Number(t.contact).toFixed(2)} · 强制 ${Number(t.force).toFixed(2)} · 骄傲挡 ${Number(t.pride_block).toFixed(2)}`;
   const mins = Math.round((data.seconds_until_due || 0) / 60);
   const cd = data.cooldown_left > 0 ? ` · 冷却还剩 ${data.cooldown_left} 分钟` : "";
+  const total = data.backlog_total ?? data.backlog;
   el("pacing").textContent =
-    `${data.user_state} · 每 ${data.tick_minutes} 分钟一拍，距下一拍 ${mins} 分钟 · 积压 ${data.backlog}${cd}`;
+    `${data.user_state} · 每 ${data.tick_minutes} 分钟一拍，距下一拍 ${mins} 分钟 · 积压 ${data.backlog}/${total}（新鲜/总）${cd}`;
   renderLog(data.recent || []);
   const notes = data.notes || [];
   el("status").textContent = `${data.persona} · ${String(data.at || "").slice(11, 19)}` + (notes.length ? ` · ${notes.join("；")}` : "");
@@ -107,7 +128,8 @@ async function refresh() {
     }
     render(await response.json());
   } catch (exc) {
-    el("status").innerHTML = `<span class="err">连不上：${exc.message}（应用在跑吗？）</span>`;
+    el("status").textContent = `连不上：${exc.message}（应用在跑吗？）`;
+    el("status").className = "muted err";
   }
 }
 
@@ -137,13 +159,20 @@ async function submitMark() {
     document.querySelectorAll(".chip").forEach((node) => node.classList.remove("on"));
     refresh();
   } catch (exc) {
-    el("mark-result").innerHTML = `<span class="err">失败：${exc.message}</span>`;
+    el("mark-result").textContent = `失败：${exc.message}`;
+    el("mark-result").className = "muted err";
   }
 }
 
 function buildChips() {
-  el("blames").innerHTML = BLAMES.map((name) => `<span class="chip" data-name="${name}">${name}</span>`).join("");
-  el("blames").addEventListener("click", (event) => {
+  const host = el("blames");
+  host.replaceChildren();
+  for (const name of BLAMES) {
+    const chip = node("span", "chip", name);
+    chip.dataset.name = name;
+    host.append(chip);
+  }
+  host.addEventListener("click", (event) => {
     const chip = event.target.closest(".chip");
     if (!chip) return;
     const name = chip.dataset.name;

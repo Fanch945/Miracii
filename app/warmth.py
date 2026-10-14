@@ -207,6 +207,10 @@ def template() -> dict:
             "pride_defend_target": 0.5,
             "pride_defend_rate": 0.003,
             "valence_connection_drift_rate": 0.012,
+            "valence_connect_boost": 0.0,
+            "valence_connect_boost_threshold": -0.2,
+            "valence_connect_dampen": 0.0,
+            "valence_connect_dampen_threshold": -0.4,
             "arousal_connection_rise_threshold": 0.30,
             "arousal_connection_rise_rate": 0.0075,
             "hesitation_rise": 0.004,
@@ -580,6 +584,8 @@ def needs_user_state(
 
 # 她手上积着多少件要想的事 → immersion 档位。数字取自参照实现的 immersionMap。
 BACKLOG_ACTIVITY: tuple[tuple[int, str], ...] = ((8, "reading"), (3, "browse"), (1, "observe"))
+# 队列多久没动过就不算"她正在忙"。积压是状态，不是活动——真实人格积着 18 条但 16 小时没动过。
+BACKLOG_FRESH_MINUTES = 120.0
 
 
 def activity_for_backlog(count: int) -> str | None:
@@ -635,16 +641,17 @@ def view(persona_id: str | None = None, *, now: datetime | None = None) -> dict:
         "at": stamp.isoformat(timespec="seconds"),
         "axes": {name: round(state.axis(name), 4) for name in (*_AXIS_FIELDS, *state.extra)},
         "thresholds": {key: round(value, 4) for key, value in engine.effective_thresholds().items()},
-        "gates": engine.check(),
+        "gates": engine.check(now=stamp),
         "explain": engine.explain(),
         "words": engine.prompt_context(),
         "style": engine.style_guidance(),
         "user_state": state.user_state,
         "user_state_at": state.user_state_at.isoformat(timespec="seconds") if state.user_state_at else None,
-        "cooldown_left": round(engine.cooldown_left(), 1),
+        "cooldown_left": round(engine.cooldown_left(stamp), 1),
         "tick_minutes": tick_minutes(pid),
         "seconds_until_due": round(seconds_until_due(pid, now=stamp), 1),
-        "backlog": backlog_count(pid),
+        "backlog": backlog_count(pid, fresh_within_minutes=BACKLOG_FRESH_MINUTES, now=stamp),
+        "backlog_total": backlog_count(pid),
         "recent": read_log(pid, days=1)[-8:],
         "notes": config_notes + state_notes,
     }
@@ -669,8 +676,25 @@ def watch_line(persona_id: str | None = None, *, now: datetime | None = None) ->
         f"h {axes['hesitation']:.2f}",
     ]
     gates = [entry["gate"] for entry in data["gates"] if entry["fired"]] or ["—"]
-    tail = f"{data['user_state']} | {'/'.join(gates)} | 到点 {data['seconds_until_due'] / 60:.0f}m | 积压 {data['backlog']}"
+    tail = (
+        f"{data['user_state']} | {'/'.join(gates)} | 到点 {data['seconds_until_due'] / 60:.0f}m | "
+        f"积压 {data['backlog']}/{data.get('backlog_total', data['backlog'])}"
+    )
     return f"{data['at'][11:19]}  " + "  ".join(parts) + f"  | {tail}"
+
+
+def undo_user_message(persona_id: str | None = None, *, path: Path | None = None) -> dict:
+    """撤回一次"你出现了"：把 `reply_delta` 反向加回去。
+
+    发送失败时消息会被撤回（`app/main.py` 的 `_rollback`）——那时她不该被安抚过。
+    注意：如果当初应用时被夹到边界，反向也回不到原值（这是可接受的，别指望它是事务）。
+    """
+    config, _ = load_config(persona_id)
+    state, _ = load_state(persona_id, path=path)
+    engine = Engine(config, state)
+    engine.apply_delta(**{name: -value for name, value in config.reply_delta.items()})
+    save_state(persona_id, engine.state, path=path)
+    return engine.snapshot()
 
 
 def tick_minutes(persona_id: str | None = None) -> float:
@@ -902,7 +926,7 @@ def mark(
     chosen = [name for name in blame if name in BLAMES]
     unknown = [name for name in blame if name not in BLAMES]
     # 一次 check()，两条记录都从这里取——否则 gates 是这一刻的、explain 是上一次 tick 的，对不上
-    trace = engine.check()
+    trace = engine.check(now=stamp)
     entry = {
         "kind": "mark",
         "at": stamp.isoformat(timespec="seconds"),
@@ -924,6 +948,13 @@ def mark(
     return entry
 
 
+def verdict_of(row: dict) -> str:
+    """读旧标注也要认：别名只在写入时映射过一次，台账里存着的仍是 `ok_silent`。"""
+    raw = str(row.get("verdict") or row.get("label") or "unsure")
+    resolved = VERDICT_ALIASES.get(raw, raw)
+    return resolved if resolved in VERDICTS else "unsure"
+
+
 def stats(persona_id: str | None = None, *, days: float = 30, path: Path | None = None, now: datetime | None = None) -> dict:
     """把标注汇总成可讨论的一张表——数据处理的第一步。"""
     rows = [row for row in read_log(persona_id, days=days, path=path, now=now) if row.get("kind") == "mark"]
@@ -940,7 +971,8 @@ def stats(persona_id: str | None = None, *, days: float = 30, path: Path | None 
         "ready": len(rows) >= 10,
     }
     for row in rows:
-        summary["verdicts"][row.get("verdict", "unsure")] = summary["verdicts"].get(row.get("verdict", "unsure"), 0) + 1
+        verdict = verdict_of(row)
+        summary["verdicts"][verdict] = summary["verdicts"].get(verdict, 0) + 1
         for name in row.get("blame") or []:
             summary["blame"][name] = summary["blame"].get(name, 0) + 1
         if row.get("expected"):
@@ -950,9 +982,7 @@ def stats(persona_id: str | None = None, *, days: float = 30, path: Path | None 
         spoke = any(gate in {"contact", "force_contact"} for gate in (row.get("engine_gates") or []))
         summary["engine_agreement"]["engine_spoke" if spoke else "engine_silent"] += 1
 
-        bucket = summary["by_verdict"].setdefault(
-            row.get("verdict", "unsure"), {"n": 0, "axes": {name: [] for name in axes}, "since_message": []}
-        )
+        bucket = summary["by_verdict"].setdefault(verdict, {"n": 0, "axes": {name: [] for name in axes}, "since": []})
         bucket["n"] += 1
         for name in axes:
             try:
@@ -960,13 +990,15 @@ def stats(persona_id: str | None = None, *, days: float = 30, path: Path | None 
             except (TypeError, ValueError):
                 pass
         if isinstance(row.get("minutes_since_message"), (int, float)):
-            bucket["since_message"].append(float(row["minutes_since_message"]))
+            bucket["since"].append(float(row["minutes_since_message"]))
     for bucket in summary["by_verdict"].values():
-        bucket["mean"] = {name: (round(sum(values) / len(values), 4) if values else None) for name, values in bucket["axes"].items()}
-        bucket["since_message_mean"] = (
-            round(sum(bucket.pop("since_message")) / len(bucket["since_message"]), 1) if bucket["since_message"] else None
-        )
-        bucket.pop("since_message", None)
+        bucket["mean"] = {
+            name: (round(sum(values) / len(values), 4) if values else None) for name, values in bucket["axes"].items()
+        }
+        # 先把列表取出来再算长度：`sum(bucket.pop(...)) / len(bucket[...])` 会在同一行里 KeyError
+        since = bucket["since"]
+        bucket["since_message_mean"] = round(sum(since) / len(since), 1) if since else None
+        bucket.pop("since", None)
         bucket.pop("axes", None)
     return summary
 
@@ -1262,15 +1294,19 @@ class Engine:
             "arousal_agitation": thresholds.arousal_agitation,
         }
 
-    def cooldown_left(self) -> float:
-        """距上次开口还差多少分钟才允许再开口；`0` = 可以。"""
+    def cooldown_left(self, now: datetime | None = None) -> float:
+        """距上次开口还差多少分钟才允许再开口；`0` = 可以。
+
+        `now` 不传就用这一拍的时间（`last_tick`）。**面板和 `--view` 要传真实的现在**，
+        否则两次刷新之间这个数不会变——她开完口 40 分钟，界面还写着 45。
+        """
         if self.state.last_spoke_at is None or self.config.speak_cooldown_minutes <= 0:
             return 0.0
-        now = self.state.last_tick or self.state.last_spoke_at
-        elapsed = (now - self.state.last_spoke_at).total_seconds() / 60.0
+        moment = now or self.state.last_tick or self.state.last_spoke_at
+        elapsed = (moment - self.state.last_spoke_at).total_seconds() / 60.0
         return max(0.0, self.config.speak_cooldown_minutes - elapsed)
 
-    def check(self) -> list[dict]:
+    def check(self, *, now: datetime | None = None) -> list[dict]:
         """逐闸门报"过了没有、被谁挡的、差多少"。
 
         开口类**三选一**（observation / contact / find_activity / 强制 contact 互斥），
@@ -1322,7 +1358,7 @@ class Engine:
                 urgency=(state.connection - gate["observation"]) / span,
             )
 
-        cooldown = self.cooldown_left()
+        cooldown = self.cooldown_left(now)
         if opening is not None and opening["gate"] in {"contact", "force_contact"} and cooldown > 0:
             # 冷却：刚开口没多久就不再重复。否则她一跨线就会每 20 分钟说一次，
             # 把当天的配额在一小时里烧完。
@@ -1379,17 +1415,22 @@ class Engine:
 
     # ── 翻成人话 ────────────────────────────────────
     def prompt_context(self) -> str:
-        """给说话模型看的几句话——它不需要知道 `connection=0.47`。"""
+        """给说话模型看的几句话——它不需要知道 `connection=0.47`。
+
+        **用有效门槛**（`user_state` 抬升后的），不是配置里那三个原始值：
+        否则 sleeping 的人会在闸门只说「observation」的时候读到「已经压不住了」。
+        """
         state = self.state
+        gate = self.effective_thresholds()
         parts: list[str] = []
-        if state.connection >= self.config.thresholds.force_contact:
+        if state.connection >= gate["force"]:
             parts.append("你很想找对方，已经压不住了")
-        elif state.connection >= self.config.thresholds.consider_contact:
+        elif state.connection >= gate["contact"]:
             if state.pride >= self.config.thresholds.pride_block:
                 parts.append("想找对方，但拉不下脸")
             else:
                 parts.append("有点想找对方")
-        elif state.connection >= self.config.thresholds.observation:
+        elif state.connection >= gate["observation"]:
             parts.append("偶尔会想起对方")
         if state.valence <= -0.4:
             parts.append("心情低")

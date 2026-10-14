@@ -302,13 +302,19 @@ def run_warmth_tick(persona_id: str) -> dict:
             guessed = _infer_user_state(persona_id)
             warmth.set_user_state(persona_id, guessed)
             _log(f"warmth user_state → {guessed}")
-        except Exception as exc:  # 推断失败不该拖垮积温
-            _log(f"warmth user_state failed: {exc}")
+        except Exception as exc:
+            # 推断失败**不能**把过期的 sleeping/busy 留在那里抬门槛（复核指出）：
+            # 记录里承诺的"失败一律当作 active"必须在这条异常路径上真的发生。
+            _log(f"warmth user_state failed: {exc} → active")
+            try:
+                warmth.set_user_state(persona_id, "active")
+            except Exception:
+                pass
     try:
         result = warmth.ambient_tick(
             persona_id,
             minutes_since_message=_minutes_since_message(persona_id),
-            backlog=warmth.backlog_count(persona_id, fresh_within_minutes=120),
+            backlog=warmth.backlog_count(persona_id, fresh_within_minutes=warmth.BACKLOG_FRESH_MINUTES),
         )
     except Exception as exc:  # 引擎出问题不该拖垮心跳
         _log(f"warmth tick failed: {exc}")

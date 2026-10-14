@@ -8,6 +8,9 @@
     <link rel="icon" href="/static/favicon.jpg" type="image/jpeg" />
     <link rel="stylesheet" href="/static/app.css?v=0.0.7" />
     <style>
+      /* app.css 把 html/body 设成 height:100% + overflow:hidden（对话页要的），
+         这一页必须改回来，否则 1100×780 的窗口里滚不到下面的标注表单（复核实测）。 */
+      html, body { height: auto; overflow: auto; }
       body { background: #161310; color: #e8e2d9; margin: 0; font: 14px/1.6 system-ui, "Microsoft YaHei", sans-serif; }
       .wrap { max-width: 900px; margin: 0 auto; padding: 18px 16px 60px; }
       .bar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }

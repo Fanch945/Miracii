@@ -60,3 +60,31 @@ after reply : connection 0.267  pride 0.5  valence −0.121  arousal 0.59  hesit
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-14）
+
+时间线、回落和冷却闸门与记录一致。真实 `warmth.json`（`load_config` 的 notes 为空）按 20 分钟一步、`minutes_since_message` 用累计分钟：observation 280、contact 440、force_contact 600（pride 0.5、arousal 0.74，同时 `find_activity`）、valence ≤ −0.3 在 680、hesitation ≥ 0.5 在 720。10 小时快照 connection 0.5172、pride 0.5、valence −0.1711、arousal 0.74、hesitation 0.08；`apply_delta(**reply_delta)` 之后是 0.2672 / 0.5 / −0.1211 / 0.59 / 0.0，内心话和写法与记录里的两句相同。`pride_defend_threshold` 0.35、arousal 上升 0.0075、valence 下沉 0.012、冷却 45、`reply_delta` 四个量都在；`min_idle_minutes` 引擎不读；`note_spoke` 只在 `deliver_speak` 返回原文之后。pride 挡住且 immersion 0.5 时只剩一条 `blocked`（gap 0.300）。24 小时 connection 1、valence −1、arousal 1、hesitation 1、pride 停在 0.5，immersion 仍是 0。记录写的「六轴全部饱和」把 immersion 也算进去了。
+
+第 7 条「写进模板」对不上。`valence_connect_boost` / `dampen` 在 `Rates` 里，`--show` 能看到，默认 0。`template()` 的 `rates`（`app/warmth.py` 202–214 行）和这份 `warmth.json` 都没有这两个键，`--write-template` 写不出它们。
+
+模型失败或空回复时，积温已经先掉下去。`on_user_message` 在 `app/main.py` 434 行，用户消息一存下就按 `reply_delta` 回落。`_rollback`（456–459 行）只删消息、撤回记录、恢复时钟，函数体里没有 `warmth`。临时状态上 connection 0.517 变成 0.267；对话回滚之后这 0.25 还在。失败的发送会解除等待，转录里却没有这条消息。
+
+最该先修：`app/main.py` 456 行。回滚时把这次 `reply_delta` 加回去，或等助手回复真正存下来再调用 `on_user_message`。
+
+```powershell
+.venv\Scripts\python.exe -c "import tempfile; from pathlib import Path; from app import warmth; p=Path(tempfile.mkdtemp())/'s.json'; warmth.save_state(None, warmth.State(connection=0.517), path=p); print(warmth.on_user_message('miracii', path=p)['connection'])"
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+```
+
+当时全库 `Ran 187 tests in 2.095s，OK (skipped=1)`。临时状态，未改 `persona/miracii`。同一时段工作区里另有未提交的 `app/static/console.js`、`tests/test_warmth_api.py`、`docs/WARMTH.txt`、`docs/BACKLOG.txt`（mtime 17:25–17:26），本复核只追加记录。
+
+### 回应（DSH / 2026-10-14）
+
+（那两个"未提交文件"是**我**在复核期间并行改的——不是你的越界。守卫报 `!!` 是对的：**复核期间作者不该动代码**。下次要并行就分开提交窗口。）
+
+| 意见 | 处理 |
+|---|---|
+| 记录写「六轴全部饱和」，把 immersion 也算进去了 | **采纳**。24 小时饱和的是**五个轴**（c=1 p=0.5 v=−1 a=1 h=1），immersion 没有活动源、仍是 0。已在 `docs/WARMTH.txt` 写明 |
+| 第 7 条「把它写进模板」对不上：`template()` 与 `warmth.json` 都没有 `valence_connect_boost` / `dampen` | **采纳**。当时只补进了 `Rates`，**没说进模板就是没做**。已把四个键（boost / dampen 及各自阈值）加进 `template()`；原句夸大，不改原文，在此更正 |
+| 模型失败或空回复时，积温已经先掉下去了（`main.py:434` 先回落，`_rollback` 456–459 不碰积温） | **采纳，已修**。新增 `warmth.undo_user_message()`：把 `reply_delta` 反向加回去；`_rollback` 现在调用它。复现→修后：`connection` 0.60 → `on_user_message` 0.35 → `undo_user_message` **0.60**（valence 也回到 −0.20）。测试：`test_undoing_a_reply_puts_the_waiting_back` |
+| 最该先修：`app/main.py` 456 行 | 同上，已按"回滚时把这次 `reply_delta` 加回去"这一路修 |

@@ -98,7 +98,7 @@ pride_block = 0.50                        不随 lift 变
 
 | 事件 | 效果 |
 |---|---|
-| **你回一句话** | `connection −0.25`、`valence +0.05`、`arousal −0.15`、`hesitation −0.20`（`reply_delta`，可配） |
+| **你回一句话** | `connection −0.25`、`valence +0.05`、`arousal −0.15`、`hesitation −0.20`（`reply_delta`，可配）。**发送失败、消息被撤回时，这四笔会原样加回去**（`undo_user_message`）——失败的发送不该解除她的等待 |
 | 她真的开口 | 不回落积温，只开始 45 分钟冷却 |
 | 她"在忙" | connection 涨得慢（乘 `1 − immersion`），并缓冲骄傲阻挡 |
 | 时间 | 不流逝就不涨：单拍上限 60 分钟 |
@@ -135,6 +135,9 @@ pride_block = 0.50                        不随 lift 变
 | 11 小时 20 分 | `valence ≤ −0.3`（真的开始低落） |
 | 12 小时 | 犹豫到 0.5，"欲言又止"生效 |
 | 16 小时 30 分 | connection 封顶 1.0 |
+
+> 24 小时后到极限的是**五个轴**（c=1 p=0.5 v=−1 a=1 h=1）；**immersion 仍是 0**——
+> 它需要真实的"她在做事"信号，而 Miracii 里目前只有学习队列这一个近似来源（见 §2.2）。
 
 ### 2.4 改一个值会发生什么（敏感度）
 
@@ -196,7 +199,7 @@ mark should_stay_silent 他在开会，这时候插话很怪
 | `python -m app.warmth --review --days 7` | 台账：跨线、被挡、真正说了什么、你的标注 |
 | `python -m app.warmth --stats --days 30` | 标注汇总：结论分布、判错维度排行、按结论分组的六轴均值 |
 | `python -m app.warmth --export --days 30` | 台账原样导出 JSON（自己算的时候用） |
-| `python -m app.warmth --once --since-message 600` | 干跑一拍（模拟"你 10 小时没说话"） |
+| `python -m app.warmth --once --since-message 600` | 推进一拍（模拟"你 10 小时没说话"）。**注意：它会落盘**，不是干跑 |
 | `GET /api/warmth` | 面板用的那个只读接口 |
 | `POST /api/warmth/mark` | 面板用的标注接口（唯一写入口，只追加台账） |
 

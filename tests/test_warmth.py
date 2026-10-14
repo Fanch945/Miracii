@@ -1134,5 +1134,104 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(warmth._bar(0.0, -1, 1, width=2), "█·")
 
 
+class ReviewFixTests(unittest.TestCase):
+    """2026-10-14 复核（Cursor）指出的问题，逐条留一条测试。"""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="warmth-rv-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        (self.root / "memory").mkdir(parents=True, exist_ok=True)
+        patcher = mock.patch.object(persona, "folder", lambda persona_id=None: self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.state = self.root / "memory" / warmth.STATE_NAME
+        self.log = self.root / "memory" / warmth.LOG_NAME
+        self.start = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+
+    def test_stats_survives_a_mark_that_records_the_gap(self):
+        """复核：`sum(bucket.pop(...)) / len(bucket[...])` 会在同一行 KeyError——一标真数据就崩。"""
+        warmth.append_log(
+            None,
+            {
+                "kind": "mark",
+                "at": self.start.isoformat(),
+                "verdict": "should_speak",
+                "minutes_since_message": 80,
+                "connection": 0.4,
+            },
+            path=self.log,
+        )
+        summary = warmth.stats(path=self.log, days=3, now=self.start)
+        self.assertEqual(summary["marks"], 1)
+        self.assertEqual(summary["by_verdict"]["should_speak"]["since_message_mean"], 80.0)
+
+    def test_old_verdict_names_are_normalized_when_read(self):
+        """复核：别名只在写入时映射过，台账里存着的 `ok_silent` 读出来还是它。"""
+        warmth.append_log(None, {"kind": "mark", "at": self.start.isoformat(), "verdict": "ok_silent"}, path=self.log)
+        summary = warmth.stats(path=self.log, days=3, now=self.start)
+        self.assertEqual(summary["verdicts"]["should_stay_silent"], 1)
+        self.assertEqual(summary["verdicts"].get("ok_silent", 0), 0)  # 旧名不该被单列成一个结论
+
+    def test_the_cooldown_counts_down_with_the_real_clock(self):
+        """复核：面板每 3 秒刷新，这个数却要等下一拍才动。"""
+        eng = warmth.Engine()
+        eng.state.last_spoke_at = self.start
+        eng.state.last_tick = self.start + timedelta(minutes=40)
+        self.assertAlmostEqual(eng.cooldown_left(), 5.0)  # 按这一拍算（闸门用）
+        self.assertAlmostEqual(eng.cooldown_left(self.start + timedelta(minutes=15)), 30.0)  # 按真实现在算（显示用）
+
+    def test_the_inner_voice_respects_the_lifted_thresholds(self):
+        """复核：sleeping 把强制线抬到 1.0，内心话却还说「已经压不住了」。"""
+        eng = warmth.Engine()
+        eng.state.connection = 0.55
+        eng.state.user_state = "sleeping"
+        self.assertEqual([e["gate"] for e in eng.check() if e["fired"]], ["observation"])
+        self.assertEqual(eng.prompt_context(), "偶尔会想起对方")
+
+    def test_the_view_reports_fresh_and_total_backlog(self):
+        """复核：引擎按"新鲜"算，界面显示总数——同一屏上两个数会打架。"""
+        queue = self.root / "memory" / "learn_queue"
+        queue.mkdir(parents=True)
+        path = queue / "pending.jsonl"
+        path.write_text('{"claim": "a"}\n', encoding="utf-8")
+        stat = os.stat(path)
+        os.utime(path, (stat.st_atime - 36000, stat.st_mtime - 36000))
+        data = warmth.view("x", now=self.start)
+        self.assertEqual(data["backlog"], 0)  # 引擎用的：新鲜的
+        self.assertEqual(data["backlog_total"], 1)  # 给人看的：总数
+
+    def test_undoing_a_reply_puts_the_waiting_back(self):
+        """复核：发送失败会撤回消息，可积温的回落留在那里了。"""
+        warmth.save_state(None, warmth.State(connection=0.60, valence=-0.20), path=self.state)
+        warmth.on_user_message(None, path=self.state)
+        back = warmth.undo_user_message(None, path=self.state)
+        self.assertAlmostEqual(back["connection"], 0.60)
+        self.assertAlmostEqual(back["valence"], -0.20)
+
+    def test_the_template_exposes_the_valence_multiplier(self):
+        """复核：记录说「写进模板」，`template()` 里其实没有这两个键。"""
+        rates = warmth.template()["rates"]
+        for key in (
+            "valence_connect_boost",
+            "valence_connect_boost_threshold",
+            "valence_connect_dampen",
+            "valence_connect_dampen_threshold",
+        ):
+            with self.subTest(key=key):
+                self.assertIn(key, rates)
+
+    def test_a_failed_guess_does_not_leave_a_stale_user_state(self):
+        """复核：推断抛错只打日志，过期的 sleeping 会一直抬着门槛。"""
+        from app import heartbeat
+
+        with mock.patch.object(heartbeat.warmth, "needs_user_state", return_value=True), mock.patch.object(
+            heartbeat, "_infer_user_state", side_effect=RuntimeError("boom")
+        ), mock.patch.object(heartbeat.warmth, "set_user_state") as setter, mock.patch.object(
+            heartbeat.warmth, "ambient_tick", return_value={"elapsed": 0.0, "fired": []}
+        ), mock.patch.object(heartbeat, "_log"):
+            heartbeat.run_warmth_tick("test")
+        setter.assert_called_once_with("test", "active")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -96,6 +96,19 @@ class WarmthApiTests(unittest.TestCase):
             with self.subTest(needle=needle):
                 self.assertIn(needle, body)
 
+    def test_the_panel_never_writes_user_text_with_innerhtml(self):
+        """复核实测：台账里用户写的标注文字走 innerHTML 时 `<img onerror>` 会执行。
+
+        这条守的是整页——面板里出现的文字有用户输入（标注、标签）和她的原话。
+        """
+        body = self.client.get("/static/warmth.js").text
+        self.assertNotIn(".innerHTML", body)
+
+    def test_the_panel_page_can_scroll_to_the_form(self):
+        """复核：app.css 把 html/body 设成 overflow:hidden，1100×780 的窗口滚不到标注表单。"""
+        page = self.client.get("/warmth").text
+        self.assertIn("overflow: auto", page)
+
 
 if __name__ == "__main__":
     unittest.main()

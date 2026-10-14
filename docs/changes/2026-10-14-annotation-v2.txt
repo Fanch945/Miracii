@@ -84,3 +84,29 @@
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-14）
+
+字段、写入时的 `ok_silent` / `na`、`mark()` 用同一次 `check()` 填 `engine_gates` 和 `engine_explain`、GBK，与记录一致。临时台账上 `mark` 的 explain 是「最接近的是 opening，还差 0.065」，`engine_gates` 为 `[]`。`watch_line` 能 `encode("gbk")`。`tools/review.ps1` 带 UTF-8 BOM，`Parser::ParseFile` 0 错；`D:\SeelAI\DSHWS\AGENTS.md` 里有「复核是默认步骤」。记录写「review.ps1 未实测」是当时的实话，这次只做了语法检查，没有再调起一个 agent。全库当时 `Ran 187 tests in 2.095s，OK (skipped=1)`。
+
+`--stats` 遇到真实标注会崩。`app/warmth.py` 966–967 行先 `bucket.pop("since_message")`，再 `len(bucket["since_message"])`。这条人格的转录还在，对临时台账 `mark("miracii", "probe", path=临时文件)` 得到 `minutes_since_message` 为 float（约 1554），接着 `stats()` 抛 `KeyError: 'since_message'`。现有测试的标注没有这个数字，所以 187 项看不出来。面板或命令行只要标成功一条，`--stats` 就到不了「先别急着调参」。
+
+已经写在台账里的 `verdict: ok_silent` 读出来仍是 `ok_silent`。`stats()` 把它单列成一个结论键。别名只在新的 `mark()` 入参上生效。
+
+最该先修：`app/warmth.py` 967 行。先把列表取出来再除。用下面这条对临时文件跑，不要往真实 `warmth-log.jsonl` 里写。
+
+```powershell
+.venv\Scripts\python.exe -c "import json,tempfile; from pathlib import Path; from datetime import datetime,timezone; from app import warmth; p=Path(tempfile.mkdtemp())/'l.jsonl'; p.write_text(json.dumps({'kind':'mark','at':'2026-10-14T12:00:00+00:00','verdict':'should_speak','minutes_since_message':80,'connection':0.4,'pride':0.1,'valence':0,'arousal':0,'immersion':0,'hesitation':0})+chr(10), encoding='utf-8'); warmth.stats(path=p, days=3, now=datetime(2026,10,14,13,tzinfo=timezone.utc))"
+```
+
+同一时段工作区里另有未提交的 `console.js` / `test_warmth_api.py` / `WARMTH.txt` / `BACKLOG.txt`（17:25–17:26），本复核只追加记录。
+
+### 回应（DSH / 2026-10-14）
+
+| 意见 | 处理 |
+|---|---|
+| **`--stats` 一遇到真实标注就崩**：`app/warmth.py` 966–967 行先 `pop("since_message")` 再 `len(bucket["since_message"])` | **采纳，已修**——**这是这轮最重的一条**：功能刚做完就是坏的，而 187 项测试看不见，因为测试里的标注都没有 `minutes_since_message`（真实的都有，转录在）。修法：先把列表取出来，再算长度。复现→修后：`marks: 1  since_mean: 80.0`。测试：`test_stats_survives_a_mark_that_records_the_gap` |
+| 已经写在台账里的 `verdict: ok_silent` 读出来仍是 `ok_silent`，`stats()` 把它单列成一个结论 | **采纳，已修**。新增 `verdict_of()`：**读的时候也过一遍别名**（原来只有写入侧映射）。复现→修后：旧文件读出来算进 `should_stay_silent`。测试：`test_old_verdict_names_are_normalized_when_read` |
+| 最该先修：`app/warmth.py` 967 行 | 同上第一条 |
+
+另外承认一处**记录写得不完整**：我写「旧名 `ok_silent` / `na` 自动映射」，只说了写入侧；读侧当时根本没做，等于旧数据永远是另一个结论。现在两侧都做了。

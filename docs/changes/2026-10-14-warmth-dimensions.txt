@@ -62,3 +62,35 @@
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-14）
+
+接线和只读与记录一致的部分：`needs_user_state` 在 sleeping、connection 0.55、上次判断已过 4 小时时为真；`ambient_tick(..., backlog=12)` 把 `at` 设成这一拍的时钟后 immersion 为 0.6；活动时钟改用真实现在、衰减用 20:00 UTC 时 immersion 被清成 0（原先那个双时钟问题，现路径已避开）。真实队列 18 条、最后改动距今 17.7 小时，`fresh_within_minutes=120` 为 0。`view()` 前后 `warmth.json` / `warmth-state.json` / `pending.jsonl` 的 SHA256 不变。
+
+推断抛错之后仍是 sleeping。`app/heartbeat.py` 300–306 行：`complete_reply` 抛 `RuntimeError` 只打日志，不调用 `set_user_state`。临时人格上 TTL 已过的 sleeping，失败后 `user_state` 还是 sleeping，`user_state_at` 停在 04:00，有效开口线仍是 0.70。过期的「他睡了」会一直抬着门槛，直到某一次调用成功。记录里的「推断失败一律当作 active」在这条异常路径上没有发生。
+
+`view()` 647 行的 `backlog_count(pid)` 不带两小时窗口。同一时刻总条数 18、新鲜条数 0、immersion 0.0，`--watch` 和面板都会显示「积压 18」。
+
+`prompt_context`（`app/warmth.py` 1385 行）用原始 `force_contact` 0.50，不用 `user_state` 抬升后的门槛。sleeping、connection 0.55 时闸门是 observation，内心话是「你很想找对方，已经压不住了」。
+
+`cooldown_left`（1269 行）用 `last_tick`。开口后 40 分钟、`last_tick` 仍停在开口那一拍：直接算是 45.0；`tick(now=+40 分钟)` 之后才是 5.0。面板每 3 秒刷新，这个数要等下一拍才动。
+
+最该先修：`app/heartbeat.py` 305 行。推断抛错时 `set_user_state(..., "active")` 并写下时间，过期的 sleeping/busy 不要继续抬门槛。
+
+```powershell
+.venv\Scripts\python.exe -c "from app import warmth; print(warmth.backlog_count('miracii'), warmth.backlog_count('miracii', fresh_within_minutes=120), warmth.view('miracii')['backlog'])"
+```
+
+全库当时 `Ran 187 tests in 2.095s，OK (skipped=1)`。推断失败用的是临时目录。同一时段工作区里另有未提交的 `console.js` / `test_warmth_api.py` / `WARMTH.txt` / `BACKLOG.txt`（17:25–17:26），本复核只追加记录。
+
+### 回应（DSH / 2026-10-14）
+
+（那四个未提交文件是**我**并行改的，不是你越界——守卫该报。）
+
+| 意见 | 处理 |
+|---|---|
+| 推断抛错之后仍是 sleeping，过期的「他睡了」一直抬着门槛（`heartbeat.py:300-306`） | **采纳，已修**。异常路径里补 `set_user_state(persona_id, "active")`——记录里承诺的"失败一律当作 active"原来只写在文档里。测试：`test_a_failed_guess_does_not_leave_a_stale_user_state` |
+| `view()` 的 `backlog_count(pid)` 不带两小时窗口，与引擎用的数不是一回事 | **采纳，已修**。`view()` 现在同时给 `backlog`（新鲜，引擎用的）与 `backlog_total`（总数）；`--watch` 与面板显示 `新鲜/总` 两个数。顺带把 120 分钟提成常量 `warmth.BACKLOG_FRESH_MINUTES`，心跳与视图不再各写一个 |
+| `prompt_context` 用原始 `force_contact` 0.50，不看 `user_state` 抬升后的门槛 → sleeping 时闸门说 observation、内心话却说「压不住了」 | **采纳，已修**。改用 `effective_thresholds()`。复现→修后：sleeping + connection 0.55 → 闸门 `observation`，内心话**「偶尔会想起对方」**。测试：`test_the_inner_voice_respects_the_lifted_thresholds` |
+| `cooldown_left` 用 `last_tick`，面板每 3 秒刷新也不会往下走 | **采纳，已修**。`cooldown_left(now=)` 与 `check(now=)` 收一个可选时钟：**闸门仍按这一拍算**（行为不变），`view()` / `mark()` 传真实现在（显示会动）。测试：`test_the_cooldown_counts_down_with_the_real_clock` |
+| 最该先修：`app/heartbeat.py` 305 行 | 同上第一条，已修 |
