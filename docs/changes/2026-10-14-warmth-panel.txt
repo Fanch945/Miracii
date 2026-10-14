@@ -1,0 +1,76 @@
+# 积温面板做进应用：不用再开终端看
+
+- 日期：2026-10-14
+- 作者：DSH（DeepSeek Harness agent）
+- 关联提交：本文件所在提交
+- 关联设计文档：[docs/WARMTH.txt](../WARMTH.txt)
+
+## 背景
+
+人提了两件事：
+
+1. **"把相关命令行加到应用程序里面去"**——应用本来就开着心跳和其他进程，
+   不该为了看她一眼再单开一个终端窗口。
+2. **"你给的 `http://127.0.0.1:...` 我打不开"**。
+
+第 2 条的原因查清了，是我说错：`app/launch.py:17` 是 **`DEFAULT_PORT = 7788`**，我按 8000 给了地址。
+另外我之前说"网页不跑心跳、要单独起心跳"也是错的——`launch.py:56-67` 的 `start_heartbeat()`
+**由应用自己起心跳**（`main()` 里 `start_server()` 之后立刻调用）。
+
+## 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `app/static/warmth.html` | **新增**。面板页：六轴 + 进度条、此刻判定、内心话/写法、门槛、节奏、最近台账、**就地标注表单**；样式内联（自成一体，不引外部资源） |
+| `app/static/warmth.js` | **新增**。每 3 秒拉一次 `/api/warmth`；标注表单 POST 到 `/api/warmth/mark` |
+| `app/main.py` | 新增 `GET /warmth`（页面）与 `POST /api/warmth/mark`（`WarmthMark` 模型，字段长度有上限） |
+| `app/static/index.html` | 顶栏加一个 **`积温`** 入口（`<a class="ghost" href="/warmth">`，与 studio.html 的「返回对话」同一写法，**不动任何 JS**） |
+| `docs/WARMTH.txt` | §3 拆成 3.1 面板 / 3.2 命令行；订正端口（7788）与"心跳由应用自己起"；补 `--stats` / `--export` / 两个接口 |
+| `tools/review.ps1` | **存成带 BOM 的 UTF-8**（见下） |
+| `tests/test_warmth_api.py` | **新增** 7 项：页面能开、状态接口形状、只读、标注走同一个函数、失败变 400、超长被 422 拦、空载荷有默认值 |
+
+设计取舍：
+
+- **页面独立**（自己的 html + js，内联样式），不碰 `app.js` / `app.css`，也就不会影响聊天界面。
+- 入口用 `<a class="ghost">` 而不是 `<button>`：**不用改 JS 就能跳转**，与 studio 页的「返回对话」同款。
+- 面板里**唯一的写入口是标注**——它只往台账追加，不碰记忆、不动引擎状态（有测试守着只读接口）。
+
+## 验证
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+# Ran 187 tests ... OK (skipped=1)      ← 上一步 180
+```
+
+真起一份干净实例验（`--port 7799 --web --no-heartbeat`，**不碰正在运行的那个**）：
+
+```text
+Miracii v0.0.1 (test)
+http 127.0.0.1:7799
+/warmth           HTTP 200  长度 5541  含『积温』 含 warmth.js 含标注按钮
+/api/warmth       connection=0.1189  闸门数=1  台账行数=0
+/                 含积温入口 True
+```
+
+顺带发现：**人自己的实例正开着**（7788 在监听）。打到它上面的结果——
+`/api/warmth` **已经可用**、`/static/warmth.js` 也 200，但 **`/warmth` 页面 404**：
+那个进程比这次改动更早启动，路由表是旧的。**重启应用后入口才会出现。**
+
+`tools/review.ps1` 的坑（第一次跑就撞上）：
+
+- 用 `powershell -File` 跑时，**PowerShell 5.1 按 GBK 读没有 BOM 的 `.ps1`**，
+  脚本里的中文被读成乱码 → 直接 `Missing closing '}'` 语法错误，什么都没跑。
+  改成**带 BOM 的 UTF-8** 后语法检查通过（`Parser::ParseFile` 报 0 错）。
+- 这是本机反复出现的一类坑（提交信息、JSON 配置都撞过），已写进记录。
+
+## 风险与未决
+
+- **面板没在真实浏览器里点过**：HTTP 层验过（200、内容齐全），但 JS 的渲染与标注提交
+  只做了静态检查与接口测试，**没有端到端点击验证**。重启应用后请先看一眼。
+- `warmth.js` 里的标签解析是逗号分隔，没有转义；标签里带逗号会被拆开。
+- 面板不做鉴权——与应用其他部分一致（只绑 `127.0.0.1`；`--lan` 时要注意）。
+- 页面的样式是内联的，与 `app.css` 的观感可能有细微差别。
+
+## 复核
+
+（留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）

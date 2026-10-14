@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>积温 · Miracii</title>
+    <link rel="icon" href="/static/favicon.ico" sizes="any" />
+    <link rel="icon" href="/static/favicon.jpg" type="image/jpeg" />
+    <link rel="stylesheet" href="/static/app.css?v=0.0.7" />
+    <style>
+      body { background: #161310; color: #e8e2d9; margin: 0; font: 14px/1.6 system-ui, "Microsoft YaHei", sans-serif; }
+      .wrap { max-width: 900px; margin: 0 auto; padding: 18px 16px 60px; }
+      .bar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+      .bar h1 { font-size: 17px; margin: 0; }
+      .bar .muted { color: #9a917f; font-size: 12px; }
+      .card { border: 1px solid #2c2721; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; background: #1b1713; }
+      .card h2 { font-size: 13px; margin: 0 0 10px; color: #b9ae99; font-weight: 600; letter-spacing: .04em; }
+      .axis { display: grid; grid-template-columns: 96px 62px 1fr; gap: 8px; align-items: center; margin: 4px 0; }
+      .axis .name { color: #cfc6b6; }
+      .axis .val { text-align: right; font-variant-numeric: tabular-nums; color: #f0e9dd; }
+      .track { position: relative; height: 10px; background: #241f1a; border-radius: 5px; overflow: hidden; }
+      .fill { position: absolute; top: 0; bottom: 0; border-radius: 5px; }
+      .fill.pos { background: linear-gradient(90deg, #5c8f6a, #86c08e); }
+      .fill.neg { background: linear-gradient(90deg, #a2543f, #c9765a); }
+      .mark-line { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #6f6656; }
+      .gate { display: flex; gap: 10px; padding: 3px 0; }
+      .gate .g { min-width: 116px; color: #9a917f; }
+      .gate.on .g { color: #86c08e; }
+      .gate .d { color: #b9ae99; }
+      .words { color: #f0e9dd; }
+      .style { color: #cfc6b6; }
+      .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+      .row label { color: #9a917f; min-width: 64px; }
+      input[type="text"], select, textarea { background: #241f1a; color: #f0e9dd; border: 1px solid #3a332a; border-radius: 6px; padding: 5px 8px; font: inherit; }
+      textarea { width: 100%; min-height: 52px; resize: vertical; }
+      button { background: #3a332a; color: #f0e9dd; border: 1px solid #4a4136; border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+      button.primary { background: #5c8f6a; border-color: #6ea57c; color: #10140f; font-weight: 600; }
+      .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+      .chip { border: 1px solid #3a332a; border-radius: 999px; padding: 3px 10px; cursor: pointer; user-select: none; color: #b9ae99; }
+      .chip.on { background: #5c8f6a; border-color: #6ea57c; color: #10140f; }
+      .log { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: #b9ae99; white-space: pre-wrap; }
+      .log .k { color: #86c08e; }
+      .log .m { color: #e0b46a; }
+      .err { color: #e08a6a; }
+      a.ghost { color: #cfc6b6; text-decoration: none; border: 1px solid #3a332a; border-radius: 6px; padding: 5px 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="bar">
+        <a class="ghost" href="/">返回对话</a>
+        <h1>积温</h1>
+        <span id="status" class="muted">载入中…</span>
+        <span style="flex:1"></span>
+        <label class="muted"><input type="checkbox" id="auto" checked /> 自动刷新</label>
+      </div>
+
+      <div class="card">
+        <h2>六个轴</h2>
+        <div id="axes"></div>
+      </div>
+
+      <div class="card">
+        <h2>此刻的判定</h2>
+        <div id="gates"></div>
+        <div class="row" style="margin-top:10px"><label>内心</label><span id="words" class="words">—</span></div>
+        <div class="row"><label>写法</label><span id="style" class="style">—</span></div>
+        <div class="row"><label>门槛</label><span id="thresholds" class="muted">—</span></div>
+        <div class="row"><label>节奏</label><span id="pacing" class="muted">—</span></div>
+      </div>
+
+      <div class="card">
+        <h2>标一条（校准的唯一输入）</h2>
+        <div class="row">
+          <label>结论</label>
+          <select id="verdict">
+            <option value="should_speak">她该开口</option>
+            <option value="should_stay_silent">她不该此时开口</option>
+            <option value="unsure">说不清</option>
+          </select>
+          <label>期望</label>
+          <select id="expected">
+            <option value="">（不指定）</option>
+            <option value="contact">contact 开口</option>
+            <option value="force_contact">force_contact 强制开口</option>
+            <option value="find_activity">find_activity 去忙自己的</option>
+            <option value="observation">observation 只想不动</option>
+            <option value="none">none 什么都不该发生</option>
+          </select>
+        </div>
+        <div class="row"><label>维度</label><div id="blames" class="chips"></div></div>
+        <div class="row"><label>说明</label><input type="text" id="text" style="flex:1" placeholder="发生了什么，为什么该 / 不该开口" /></div>
+        <div class="row"><label>标签</label><input type="text" id="tags" style="flex:1" placeholder="逗号分隔，如：深夜, 他情绪低落" /></div>
+        <div class="row"><button class="primary" id="mark-btn" type="button">记下这一条</button><span id="mark-result" class="muted"></span></div>
+      </div>
+
+      <div class="card">
+        <h2>最近的台账</h2>
+        <div id="log" class="log">—</div>
+      </div>
+    </div>
+    <script src="/static/warmth.js?v=0.0.1"></script>
+  </body>
+</html>

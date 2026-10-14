@@ -158,6 +158,17 @@ pride_block = 0.50                        不随 lift 变
 
 ## 3. 怎么观察她
 
+### 3.1 应用里的面板（推荐，不用开终端）
+
+**`http://127.0.0.1:7788/warmth`**——应用左上角「积温」按钮也直接进得去（`launch.py` 的
+`DEFAULT_PORT = 7788`）。面板每 3 秒刷新一次，显示：六个轴 + 进度条、**此刻的判定**（每道闸门过了没有、
+还差多少）、她此刻的内心话与写法提示、有效门槛、节奏（到点几秒、积压几条、冷却还剩多久）、
+最近台账，以及**就地标注的表单**（结论 / 维度 / 期望 / 标签）。
+
+> 换过端口就用 `--port` 那个值。应用窗口本身就是这个地址（pywebview），也可以直接在浏览器打开同一个 URL。
+
+### 3.2 命令行（想脚本化或离开界面时）
+
 | 命令 | 看什么 |
 |---|---|
 | `python -m app.warmth --watch` | **实时一行**：六轴 + 进度条 + 此刻闸门 + 到点 + 积压（Ctrl+C 退出） |
@@ -165,8 +176,11 @@ pride_block = 0.50                        不随 lift 变
 | `python -m app.warmth --state` | 落盘状态 + 距下拍到点 |
 | `python -m app.warmth --show` | 当前生效的全部旋钮 |
 | `python -m app.warmth --review --days 7` | 台账：跨线、被挡、真正说了什么、你的标注 |
+| `python -m app.warmth --stats --days 30` | 标注汇总：结论分布、判错维度排行、按结论分组的六轴均值 |
+| `python -m app.warmth --export --days 30` | 台账原样导出 JSON（自己算的时候用） |
 | `python -m app.warmth --once --since-message 600` | 干跑一拍（模拟"你 10 小时没说话"） |
-| `GET /api/warmth?persona=miracii` | 网页侧同一份数据（只读） |
+| `GET /api/warmth` | 面板用的那个只读接口 |
+| `POST /api/warmth/mark` | 面板用的标注接口（唯一写入口，只追加台账） |
 
 `--watch` 实例（真实数字）：
 
@@ -176,7 +190,9 @@ pride_block = 0.50                        不随 lift 变
 
 `--view` 的 `gates` 就是"她为什么现在不开口"：每条带 `gap`（还差多少）或 `urgency`（过了多少）。
 
-> **前提**：数值由**心跳进程**推进，网页本身不跑心跳。要看它动，得开着 `.venv\Scripts\python.exe -m app.heartbeat`。
+> **前提**：数值由心跳推进。**应用自己就起心跳**（`launch.py: start_heartbeat()`），
+> 所以正常开着 Miracii 就已经在跑了——不用另开终端。只有想单独跑巩固链时才用
+> `--no-heartbeat` 之外的方式起 `python -m app.heartbeat`。
 
 ---
 

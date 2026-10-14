@@ -1,4 +1,4 @@
-# 让另一个 agent 复核一次改动。用法见文件末尾的示例。
+﻿# 让另一个 agent 复核一次改动。用法见文件末尾的示例。
 #
 #   powershell -File tools\review.ps1 -Record docs\changes\2026-10-14-xxx.txt -Ask "重点看闸门判定"
 #

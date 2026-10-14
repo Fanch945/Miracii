@@ -359,6 +359,35 @@ def warmth_view(persona: str | None = None) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/warmth")
+def warmth_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "warmth.html")
+
+
+class WarmthMark(BaseModel):
+    text: str = Field("", max_length=400)
+    verdict: str = Field("should_speak", max_length=32)
+    blame: list[str] = Field(default_factory=list)
+    expected: str | None = Field(None, max_length=32)
+    tags: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/warmth/mark")
+def warmth_mark(body: WarmthMark, persona: str | None = None) -> dict:
+    """就地标注。面板里**唯一**的写入口——只往台账追加，不碰记忆，也不动引擎状态。"""
+    try:
+        return warmth.mark(
+            persona,
+            body.text,
+            verdict=body.verdict,
+            blame=body.blame,
+            expected=body.expected,
+            tags=body.tags,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/notices")
 def list_notices(after: int = 0, persona: str | None = None, catchup: int = 0) -> dict:
     if catchup:
