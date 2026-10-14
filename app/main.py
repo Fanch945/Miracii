@@ -346,6 +346,19 @@ def runtime_log(persona: str, kind: str = "supervisor") -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/api/warmth")
+def warmth_view(persona: str | None = None) -> dict:
+    """她此刻的六轴、有效门槛、每道闸门的差距——只读，不改任何状态。
+
+    参数名沿用其他接口的 `persona`；`None` 时由 `warmth.view` 自己取当前人格
+    （这里不能引用 persona 模块——参数把它遮住了）。
+    """
+    try:
+        return warmth.view(persona)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/notices")
 def list_notices(after: int = 0, persona: str | None = None, catchup: int = 0) -> dict:
     if catchup:

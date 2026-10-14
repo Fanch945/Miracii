@@ -1,0 +1,64 @@
+# 积温：接通 user_state 与 immersion，并给出观察入口
+
+- 日期：2026-10-14
+- 作者：DSH（DeepSeek Harness agent）
+- 关联提交：本文件所在提交
+- 关联设计文档：[docs/WARMTH.txt](../WARMTH.txt)
+- 前置记录：[2026-10-14-warmth-engine.txt](2026-10-14-warmth-engine.txt)、[-config](2026-10-14-warmth-config.txt)、[-runtime](2026-10-14-warmth-runtime.txt)、[-ledger](2026-10-14-warmth-ledger.txt)、[-fixes](2026-10-14-warmth-fixes.txt)
+
+## 背景
+
+引擎的六个轴里有两块**没通电**：`user_state`（谁来判断"他忙不忙"）与 `immersion`（谁来说"她在做事"）。
+字段、调制、测试都在，但没有任何代码去填。这一步把它们接上，并回答人的另一个问题：
+**怎样观察到人格此刻的引擎数值。**
+
+## 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `app/warmth.py` | `set_user_state` / `needs_user_state` / `backlog_count` / `activity_for_backlog` / `view` / `watch_line`；`ambient_tick(backlog=)`；`State.user_state_at`；`Config.user_state_ttl_minutes` / `user_state_trigger_ratio`；命令行 `--view` / `--watch` / `--interval` |
+| `app/heartbeat.py` | `_infer_user_state()`（用 `llm.complete_reply` 判断 active/busy/away/sleeping）；`run_warmth_tick` 先推断再推进，并把学习队列的**新鲜积压**作为 immersion 传进去 |
+| `app/main.py` | 新增只读接口 `GET /api/warmth` |
+| `docs/WARMTH.txt` | 新增：六轴说明、时间线、**观察命令表**、文件落点、未接通项 |
+| `tests/test_warmth.py` | +13 项（他忙不忙、积压映射与新鲜度、观察入口只读、进度条） |
+
+### 三条设计决定
+
+1. **不每拍都问模型**。`needs_user_state` 只在两件事同时成立时才为真：connection 已到开口线的 60%，
+   且上一次判断超过 `user_state_ttl_minutes`（默认 180 分钟）。否则 20 分钟一拍、一天 72 次调用纯属浪费。
+   推断失败一律当作 `active`——宁可当她"随时能说话"，也不要因为一次网络抖动把她锁成"他在忙"。
+2. **积压是状态，不是活动**。第一版直接拿队列条数当 immersion，结果真实人格的 18 条积压会让她的
+   连接需求**永远按四成速度涨**（说话时间从 7.3 小时推到 18 小时）。那 18 条其实 16.5 小时没动过。
+   现在只认"最近两小时内被动过"的队列——`backlog_count(fresh_within_minutes=120)`，实测该人格为 0。
+3. **观察入口全部只读**。`--view` / `--watch` / `/api/warmth` 只读状态文件，不推进、不落盘（有测试守着）。
+
+## 验证
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+# Ran 170 tests ... OK (skipped=1)      ← 上一步 157 项
+
+.venv\Scripts\python.exe -m app.warmth --view
+# 输出六轴 + 有效门槛 + 每道闸门的差距 + 此刻的内心话/写法提示
+
+.venv\Scripts\python.exe -m app.warmth --watch --interval 1
+# 08:13:03  c 0.068 ████···  p +0.00 ········  v −0.03 ········  a +0.00  i 0.00  h 0.00  | active | — | 到点 0m | 积压 18
+```
+
+真实人格的积压实测：`条数 18、最后改动距今 16.5 小时` → 计入忙的条数为 **0** → 不抬 immersion ✓
+
+**过程中测试抓到一个真 bug**：`ambient_tick` 里 `set_activity` 没传 `at=stamp`，
+活动时钟用真实时间、衰减用这一拍的时钟，两个时钟打架 → immersion 被瞬间清空。
+已修（`set_activity(..., at=stamp)`）——这跟复核抓到的几个问题是同一族：**时间基准必须统一**。
+
+## 风险与未决
+
+- `user_state` 的实际判断质量**未验证**：没有跑过真实对话，不知道 `deepseek-flash` 判断"他在忙"准不准。
+  它只在逼近开口线时才被调用，所以真要看效果得等一次真实的长时间沉默。
+- `immersion` 的语义仍是**近似**：Miracii 没有"她正在读什么"这种活动源，学习队列只是最接近的替代。
+- 阈值仍未校准（要等标注）；`tone-grid` 与 `saga` / `circadian` 钩子未做。
+- `--watch` 在 GBK 控制台下中文可能显示为乱码（本机实测如此），但数值与进度条正常。
+
+## 复核
+
+（留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）

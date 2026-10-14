@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -136,6 +137,10 @@ class Config:
     # 单次空闲 tick 最多按多少分钟推进。停机一夜不会一次性补满——
     # 她并没有在关机时"等着"，一开机就扑上来也不像她。改这个值就能改这个取舍。
     max_tick_minutes: float = MAX_TICK_MINUTES
+    # `user_state` 由轻量模型从最近的对话推断；超过这个时长就不再采信。
+    user_state_ttl_minutes: float = 180.0
+    # 只有连接需求逼近开口线时才值得花一次模型调用（见 needs_user_state）
+    user_state_trigger_ratio: float = 0.6
     # 对方回话时的一次性回落：等待应当由"你出现了"解除，
     # 而不是她自己开了口就自我安慰（那样她会一路说下去，直到配额拦停）。
     # 数值是暂定的：真正该多大要等标注数据（见 docs/changes/2026-10-14-warmth-fixes.txt）。
@@ -279,6 +284,8 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
         "persona",
         "speak_cooldown_minutes",
         "max_tick_minutes",
+        "user_state_ttl_minutes",
+        "user_state_trigger_ratio",
         "reply_delta",
     }
     notes += [
@@ -306,6 +313,21 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
     cooldown = _positive("speak_cooldown_minutes", base.speak_cooldown_minutes, allow_zero=True)
     # 复核抓到：字段加进 Config 却没接进 load_config，等于"可配"是空话
     max_tick = _positive("max_tick_minutes", base.max_tick_minutes)
+    state_ttl = _positive("user_state_ttl_minutes", base.user_state_ttl_minutes, allow_zero=True)
+
+    ratio_raw = raw.get("user_state_trigger_ratio")
+    if ratio_raw is None:
+        ratio = base.user_state_trigger_ratio
+    else:
+        try:
+            ratio = float(ratio_raw)
+        except (TypeError, ValueError):
+            notes.append(f"user_state_trigger_ratio: {ratio_raw!r} 不是数字，用默认")
+            ratio = base.user_state_trigger_ratio
+        else:
+            if not math.isfinite(ratio) or not 0.0 <= ratio <= 1.0:
+                notes.append(f"user_state_trigger_ratio: {ratio_raw!r} 不在 0–1，用默认")
+                ratio = base.user_state_trigger_ratio
 
     reply = raw.get("reply_delta")
     if isinstance(reply, dict) and reply:
@@ -379,6 +401,8 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
         user_state_lift=lifts,
         speak_cooldown_minutes=cooldown,
         max_tick_minutes=max_tick,
+        user_state_ttl_minutes=state_ttl,
+        user_state_trigger_ratio=ratio,
         reply_delta=reply,
         persona=persona,
     )
@@ -403,6 +427,8 @@ def effective_config(config: Config) -> dict:
         "user_state_lift": dict(config.user_state_lift),
         "speak_cooldown_minutes": config.speak_cooldown_minutes,
         "max_tick_minutes": config.max_tick_minutes,
+        "user_state_ttl_minutes": config.user_state_ttl_minutes,
+        "user_state_trigger_ratio": config.user_state_trigger_ratio,
         "reply_delta": dict(config.reply_delta),
         "persona": dict(config.persona),
         "extra_axes": [
@@ -433,6 +459,7 @@ def state_to_dict(state: State) -> dict:
         "last_spoke_at": state.last_spoke_at.isoformat() if state.last_spoke_at else None,
         "last_gates": list(state.last_gates),
         "user_state": state.user_state,
+        "user_state_at": state.user_state_at.isoformat() if state.user_state_at else None,
     }
 
 
@@ -457,7 +484,7 @@ def state_from_dict(payload: dict) -> State:
             for k, v in extra.items()
             if isinstance(v, (int, float)) and math.isfinite(float(v))
         }
-    for name in ("last_activity_at", "last_tick", "last_spoke_at"):
+    for name in ("last_activity_at", "last_tick", "last_spoke_at", "user_state_at"):
         raw = payload.get(name)
         if isinstance(raw, str) and raw:
             try:
@@ -514,6 +541,138 @@ def on_user_message(persona_id: str | None = None, *, path: Path | None = None) 
     return engine.snapshot()
 
 
+def set_user_state(
+    persona_id: str | None = None, value: str = "active", *, now: datetime | None = None, path: Path | None = None
+) -> State:
+    """记下"他此刻大概是什么状态"。由轻量模型推断（见 heartbeat._infer_user_state），不是猜的。"""
+    state, _ = load_state(persona_id, path=path)
+    if value in Config().user_state_lift:
+        state.user_state = value
+        state.user_state_at = now or _now()
+        save_state(persona_id, state, path=path)
+    return state
+
+
+def needs_user_state(
+    persona_id: str | None = None,
+    *,
+    now: datetime | None = None,
+    config: Config | None = None,
+    path: Path | None = None,
+) -> bool:
+    """值不值得再花一次模型调用。
+
+    只在"他忙不忙"真能改变结论时才问：连接需求已逼近开口线，且上一次推断过期了。
+    否则每个 tick 调一次模型纯属浪费——20 分钟一次、一天 72 次。
+    """
+    resolved = config or load_config(persona_id)[0]
+    state, _ = load_state(persona_id, path=path)
+    stamp = now or _now()
+    fresh = False
+    if state.user_state_at is not None:
+        age = (stamp - state.user_state_at).total_seconds() / 60.0
+        fresh = age < resolved.user_state_ttl_minutes
+    if fresh:
+        return False
+    near = state.connection >= Engine(resolved, state).effective_thresholds()["contact"] * resolved.user_state_trigger_ratio
+    return near
+
+
+# 她手上积着多少件要想的事 → immersion 档位。数字取自参照实现的 immersionMap。
+BACKLOG_ACTIVITY: tuple[tuple[int, str], ...] = ((8, "reading"), (3, "browse"), (1, "observe"))
+
+
+def activity_for_backlog(count: int) -> str | None:
+    """没有积压就不装忙——`None` 会把沉浸度清掉。"""
+    for floor, kind in BACKLOG_ACTIVITY:
+        if count >= floor:
+            return kind
+    return None
+
+
+def backlog_count(
+    persona_id: str | None = None,
+    *,
+    fresh_within_minutes: float | None = None,
+    now: datetime | None = None,
+) -> int:
+    """待办学习队列的长度——Miracii 里唯一近似"她正在忙"的信号。
+
+    **默认只在队列是"新鲜"的时才认**（`fresh_within_minutes`）：积压是状态，不是活动。
+    真实的 miracii 队列里积着十几条，如果无条件当成"她正埋头"，连接需求会永远按四成速度涨，
+    那不是"她在忙"，那是"她有个没清完的待办"。只有在最近这段时间里队列确实被动过，
+    才说明她此刻真的在消化它。（参照实现的 reading / search / browse 在这边没有对应物。）
+    """
+    from . import persona
+
+    queue = persona.folder(persona_id) / "memory" / "learn_queue" / "pending.jsonl"
+    if not queue.is_file():
+        return 0
+    try:
+        stat = queue.stat()
+        text = queue.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    if fresh_within_minutes is not None:
+        stamp = now or _now()
+        age = (stamp - datetime.fromtimestamp(stat.st_mtime, tz=stamp.tzinfo)).total_seconds() / 60.0
+        if age > fresh_within_minutes:
+            return 0
+    return len([line for line in text.splitlines() if line.strip()])
+
+
+def view(persona_id: str | None = None, *, now: datetime | None = None) -> dict:
+    """给人看的当前状态：六轴 + 有效门槛 + 每道闸门的差距 + 到点时间 + 最近台账。"""
+    from . import persona as persona_module
+
+    pid = persona_id or persona_module.active_id()
+    config, config_notes = load_config(pid)
+    state, state_notes = load_state(pid)
+    engine = Engine(config, state)
+    stamp = now or _now()
+    return {
+        "persona": pid,
+        "at": stamp.isoformat(timespec="seconds"),
+        "axes": {name: round(state.axis(name), 4) for name in (*_AXIS_FIELDS, *state.extra)},
+        "thresholds": {key: round(value, 4) for key, value in engine.effective_thresholds().items()},
+        "gates": engine.check(),
+        "explain": engine.explain(),
+        "words": engine.prompt_context(),
+        "style": engine.style_guidance(),
+        "user_state": state.user_state,
+        "user_state_at": state.user_state_at.isoformat(timespec="seconds") if state.user_state_at else None,
+        "cooldown_left": round(engine.cooldown_left(), 1),
+        "tick_minutes": tick_minutes(pid),
+        "seconds_until_due": round(seconds_until_due(pid, now=stamp), 1),
+        "backlog": backlog_count(pid),
+        "recent": read_log(pid, days=1)[-8:],
+        "notes": config_notes + state_notes,
+    }
+
+
+def _bar(value: float, low: float, high: float, width: int = 12) -> str:
+    span = max(1e-9, high - low)
+    filled = int(round((clamp(value, low, high) - low) / span * width))
+    return "█" * filled + "·" * (width - filled)
+
+
+def watch_line(persona_id: str | None = None, *, now: datetime | None = None) -> str:
+    """一行看清她现在的样子——`--watch` 每几秒重画一次。"""
+    data = view(persona_id, now=now)
+    axes = data["axes"]
+    parts = [
+        f"c {axes['connection']:.3f} {_bar(axes['connection'], 0, 1)}",
+        f"p {axes['pride']:+.2f} {_bar(axes['pride'], -1, 1)}",
+        f"v {axes['valence']:+.2f} {_bar(axes['valence'], -1, 1)}",
+        f"a {axes['arousal']:+.2f} {_bar(axes['arousal'], -1, 1)}",
+        f"i {axes['immersion']:.2f}",
+        f"h {axes['hesitation']:.2f}",
+    ]
+    gates = [entry["gate"] for entry in data["gates"] if entry["fired"]] or ["—"]
+    tail = f"{data['user_state']} | {'/'.join(gates)} | 到点 {data['seconds_until_due'] / 60:.0f}m | 积压 {data['backlog']}"
+    return f"{data['at'][11:19]}  " + "  ".join(parts) + f"  | {tail}"
+
+
 def tick_minutes(persona_id: str | None = None) -> float:
     """空闲 tick 的间隔：读 `schedule.txt` 里那个一直没人用的 `tick_minutes`。"""
     from . import supervisor
@@ -544,6 +703,7 @@ def ambient_tick(
     config: Config | None = None,
     path: Path | None = None,
     log: Path | None = None,
+    backlog: int | None = None,
 ) -> dict:
     """空闲 tick：推进积温、落盘、返回这次触发了什么。
 
@@ -562,6 +722,10 @@ def ambient_tick(
         return {"elapsed": 0.0, "first": False, "fired": [], "notes": notes, "snapshot": Engine(resolved, state).snapshot()}
 
     engine = Engine(resolved, state)
+    if backlog is not None:
+        # 她手上有没有事，决定了连接需求涨得快不快（每拍重申一次，积压还在她就一直在忙）。
+        # `at=stamp` 不能省：活动时钟必须和这一拍的时钟一致，否则衰减会按两个时钟算。
+        engine.set_activity(activity_for_backlog(backlog), at=stamp)
     fired = engine.tick(elapsed, now=stamp, minutes_since_message=minutes_since_message)
     gates_now = gate_set(engine, fired)
     loggable = gates_now != sorted(engine.state.last_gates or [])
@@ -757,6 +921,7 @@ class State:
     last_spoke_at: datetime | None = None
     last_gates: list[str] = field(default_factory=list)
     user_state: str = "active"
+    user_state_at: datetime | None = None
 
     def axis(self, name: str) -> float:
         if name in self.extra:
@@ -1179,11 +1344,27 @@ if __name__ == "__main__":
     parser.add_argument("--label", default="should_speak", choices=list(LABELS), help="标注结论")
     parser.add_argument("--review", action="store_true", help="列出最近的台账与人工标注")
     parser.add_argument("--days", type=float, default=3.0, help="配合 --review：看最近几天")
+    parser.add_argument("--view", action="store_true", help="打印当前状态的 JSON（轴值/门槛/差距）")
+    parser.add_argument("--watch", action="store_true", help="每几秒重画一行，实时看她现在的样子")
+    parser.add_argument("--interval", type=float, default=5.0, help="配合 --watch：刷新间隔秒数")
     options = parser.parse_args()
 
     from . import persona
 
     pid = options.persona or persona.active_id()
+
+    if options.view:
+        print(json.dumps(view(pid), ensure_ascii=False, indent=2))
+        raise SystemExit(0)
+
+    if options.watch:
+        print(f"积温 {pid}  每 {options.interval:g} 秒刷新一次，Ctrl+C 退出")
+        try:
+            while True:
+                print(watch_line(pid))
+                time.sleep(max(1.0, options.interval))
+        except KeyboardInterrupt:
+            raise SystemExit(0)
 
     if options.mark is not None:
         print(json.dumps(mark(pid, options.mark, label=options.label), ensure_ascii=False, indent=2))

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -444,6 +445,8 @@ class ConfigTests(unittest.TestCase):
                 "user_state_lift",
                 "speak_cooldown_minutes",
                 "max_tick_minutes",
+                "user_state_ttl_minutes",
+                "user_state_trigger_ratio",
                 "reply_delta",
                 "persona",
                 "extra_axes",
@@ -464,6 +467,8 @@ class ConfigTests(unittest.TestCase):
             "user_state_lift": {"busy": 2.0},
             "speak_cooldown_minutes": 30.0,
             "max_tick_minutes": 120.0,
+            "user_state_ttl_minutes": 30.0,
+            "user_state_trigger_ratio": 0.9,
             "reply_delta": {"connection": -0.1},
             "persona": {"self_name": "我"},
         }
@@ -917,6 +922,135 @@ class ReplyTests(unittest.TestCase):
         warmth.save_state(None, warmth.State(connection=0.1), path=self.state)
         snapshot = warmth.on_user_message(None, path=self.state)
         self.assertEqual(snapshot["connection"], 0.0)
+
+
+class UserStateTests(unittest.TestCase):
+    """他忙不忙：由模型推断，但只在真能改变结论的时候才问。"""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="warmth-user-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        (self.root / "memory").mkdir(parents=True, exist_ok=True)
+        patcher = mock.patch.object(persona, "folder", lambda persona_id=None: self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.state = self.root / "memory" / warmth.STATE_NAME
+        self.start = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+
+    def test_setting_a_state_stamps_the_time(self):
+        warmth.set_user_state(None, "busy", now=self.start, path=self.state)
+        loaded, _ = warmth.load_state(path=self.state)
+        self.assertEqual(loaded.user_state, "busy")
+        self.assertEqual(loaded.user_state_at, self.start)
+
+    def test_an_unknown_state_is_ignored(self):
+        warmth.set_user_state(None, "很忙", now=self.start, path=self.state)
+        loaded, _ = warmth.load_state(path=self.state)
+        self.assertEqual(loaded.user_state, "active")
+        self.assertIsNone(loaded.user_state_at)
+
+    def test_a_fresh_guess_is_not_asked_again(self):
+        warmth.set_user_state(None, "active", now=self.start, path=self.state)
+        state, _ = warmth.load_state(path=self.state)
+        state.connection = 0.5  # 已经在开口线附近
+        warmth.save_state(None, state, path=self.state)
+        self.assertFalse(warmth.needs_user_state(None, now=self.start + timedelta(minutes=30), path=self.state))
+
+    def test_a_stale_guess_is_renewed_only_when_it_matters(self):
+        warmth.set_user_state(None, "active", now=self.start, path=self.state)
+        state, _ = warmth.load_state(path=self.state)
+        state.connection = 0.5
+        warmth.save_state(None, state, path=self.state)
+        later = self.start + timedelta(hours=8)
+        self.assertTrue(warmth.needs_user_state(None, now=later, path=self.state))
+
+        state.connection = 0.05  # 离开口线还远，问也没用
+        warmth.save_state(None, state, path=self.state)
+        self.assertFalse(warmth.needs_user_state(None, now=later, path=self.state))
+
+    def test_backlog_maps_to_an_activity(self):
+        self.assertIsNone(warmth.activity_for_backlog(0))
+        self.assertEqual(warmth.activity_for_backlog(1), "observe")
+        self.assertEqual(warmth.activity_for_backlog(4), "browse")
+        self.assertEqual(warmth.activity_for_backlog(12), "reading")
+
+    def test_backlog_count_reads_the_learn_queue(self):
+        self.assertEqual(warmth.backlog_count(None), 0)  # 还没有队列文件
+        queue = self.root / "memory" / "learn_queue"
+        queue.mkdir(parents=True)
+        (queue / "pending.jsonl").write_text('{"claim": "a"}\n\n{"claim": "b"}\n', encoding="utf-8")
+        self.assertEqual(warmth.backlog_count(None), 2)
+
+    def test_a_dormant_backlog_does_not_count_as_being_busy(self):
+        """积压是状态，不是活动：放了很久的待办不该让她永远"埋头"。"""
+        queue = self.root / "memory" / "learn_queue"
+        queue.mkdir(parents=True)
+        path = queue / "pending.jsonl"
+        path.write_text('{"claim": "a"}\n', encoding="utf-8")
+        stale = os.stat(path)
+        old = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+        # 把文件时间拨到十小时前
+        os.utime(path, (stale.st_atime - 36000, stale.st_mtime - 36000))
+        self.assertEqual(warmth.backlog_count(None, fresh_within_minutes=120, now=old), 0)
+        self.assertEqual(warmth.backlog_count(None), 1)  # 不传窗口就只看条数
+
+    def test_a_backlog_slows_the_growth_and_occupies_her(self):
+        state = warmth.State()
+        state.last_tick = self.start
+        warmth.save_state(None, state, path=self.state)
+        busy = warmth.ambient_tick(now=self.start + timedelta(minutes=60), path=self.state, backlog=12)
+
+        warmth.save_state(None, warmth.State(last_tick=self.start), path=self.state)
+        idle = warmth.ambient_tick(now=self.start + timedelta(minutes=60), path=self.state, backlog=0)
+
+        self.assertLess(busy["snapshot"]["connection"], idle["snapshot"]["connection"])
+        self.assertGreater(busy["snapshot"]["immersion"], 0.0)
+        self.assertEqual(idle["snapshot"]["immersion"], 0.0)
+
+    def test_a_busy_user_raises_the_bar(self):
+        state = warmth.State(connection=0.40, user_state="busy")
+        warmth.save_state(None, state, path=self.state)
+        data = warmth.view(None, now=self.start)
+        self.assertGreater(data["thresholds"]["contact"], 0.35)
+
+
+class ViewTests(unittest.TestCase):
+    """给人看的入口：--view / --watch / /api/warmth。"""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="warmth-view-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        (self.root / "memory").mkdir(parents=True, exist_ok=True)
+        patcher = mock.patch.object(persona, "folder", lambda persona_id=None: self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.start = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+
+    def test_view_reports_every_axis_and_gate(self):
+        data = warmth.view("x", now=self.start)
+        self.assertEqual(
+            set(data["axes"]), {"connection", "pride", "valence", "arousal", "immersion", "hesitation"}
+        )
+        self.assertIn("contact", data["thresholds"])
+        self.assertTrue(data["gates"])
+        self.assertIn("explain", data)
+        self.assertIn("tick_minutes", data)
+
+    def test_view_is_read_only(self):
+        before = sorted(path.name for path in (self.root / "memory").iterdir())
+        warmth.view("x", now=self.start)
+        self.assertEqual(before, sorted(path.name for path in (self.root / "memory").iterdir()))
+
+    def test_watch_line_is_one_readable_line(self):
+        line = warmth.watch_line("x", now=self.start)
+        self.assertEqual(line.count("\n"), 0)
+        self.assertIn("c ", line)
+        self.assertIn("积压", line)
+
+    def test_the_bar_reflects_the_value(self):
+        self.assertEqual(warmth._bar(0.0, 0, 1, width=4), "····")
+        self.assertEqual(warmth._bar(1.0, 0, 1, width=4), "████")
+        self.assertEqual(warmth._bar(0.0, -1, 1, width=2), "█·")
 
 
 if __name__ == "__main__":

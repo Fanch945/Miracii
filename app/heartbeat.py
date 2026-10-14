@@ -8,7 +8,7 @@ import socket
 import time
 from datetime import datetime
 
-from . import clock, db, files, notices, notify, persona, starmap, supervisor, wake, warmth
+from . import clock, db, files, llm, notices, notify, persona, starmap, supervisor, wake, warmth
 from .files import DATA_DIR
 from .keys import load_keys
 
@@ -261,14 +261,55 @@ def _minutes_since_message(persona_id: str) -> float | None:
     return max(0.0, (datetime.now().astimezone() - stamp).total_seconds() / 60.0)
 
 
+_USER_STATE_PROMPT = (
+    "下面是他最近说的几句话。用一个词判断他此刻的状态，只回那一个词，不要标点不要解释：\n"
+    "active（正常，随时能回话）\n"
+    "busy（在忙别的事，可能顾不上）\n"
+    "away（大概不在）\n"
+    "sleeping（大概睡了）"
+)
+
+
+def _infer_user_state(persona_id: str) -> str:
+    """让轻量模型判断"他此刻忙不忙"——引擎的 user_state 调制靠它。
+
+    只在值得问的时候问（见 `warmth.needs_user_state`）。失败一律当作 active：
+    宁可把她当"他随时能说话"，也不要因为一次网络抖动就把她锁成"他在忙"。
+    """
+    rows = db.recent_dialogue(persona_id, limit=12)
+    said = [str(row.get("content") or "").strip() for row in rows if row.get("role") == "user"]
+    said = [text for text in said if text]
+    if not said:
+        return "active"
+    excerpt = "\n".join(f"- {text[:120]}" for text in said[-6:])
+    answer = llm.complete_reply(
+        [{"role": "user", "content": f"{_USER_STATE_PROMPT}\n\n{excerpt}"}], max_tokens=8, temperature=0.0
+    ).lower()
+    for word in ("sleeping", "busy", "away", "active"):
+        if word in answer:
+            return word
+    return "active"
+
+
 def run_warmth_tick(persona_id: str) -> dict:
     """空闲 tick：积温回答"现在想不想开口"，记忆那边照旧归巩固链。
 
     与巩固 tick 完全分开——这正是它以前被饿死的原因（supervisor 只在巩固截止点被叫醒，
     那些时刻它被要求整理记忆，而不是判断想不想说话）。
     """
+    if warmth.needs_user_state(persona_id):
+        try:
+            guessed = _infer_user_state(persona_id)
+            warmth.set_user_state(persona_id, guessed)
+            _log(f"warmth user_state → {guessed}")
+        except Exception as exc:  # 推断失败不该拖垮积温
+            _log(f"warmth user_state failed: {exc}")
     try:
-        result = warmth.ambient_tick(persona_id, minutes_since_message=_minutes_since_message(persona_id))
+        result = warmth.ambient_tick(
+            persona_id,
+            minutes_since_message=_minutes_since_message(persona_id),
+            backlog=warmth.backlog_count(persona_id, fresh_within_minutes=120),
+        )
     except Exception as exc:  # 引擎出问题不该拖垮心跳
         _log(f"warmth tick failed: {exc}")
         return {"elapsed": 0.0, "fired": [], "error": str(exc)}
