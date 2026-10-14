@@ -1,0 +1,62 @@
+# 项目级规矩：Miracii/AGENTS.md
+
+- 日期：2026-10-14
+- 作者：DSH（DeepSeek Harness agent）
+- 关联提交：本文件所在提交
+- 关联设计文档：本文件本身即规矩；改动登记细节见 [docs/changes/README.txt](README.txt)
+
+## 背景
+
+今晚这一段的工作全在 Miracii 里，但**规矩一直挂在工作区 `D:\SeelAI\DSHWS\AGENTS.md`**——
+那是工作区级的，`Miracii/` 下原本**没有** AGENTS.md。
+
+两个后果：
+
+1. 人打算把本会话迁到 Miracii 工作区。**一迁，那份工作区规矩就不再被注入**，
+   今晚刚建立的五步复核流程等于白写。
+2. Cursor 在 Miracii 里作业时也读不到那些规矩（CLI/IDE 都按项目根找 `AGENTS.md`）。
+   两边各有一套隐性习惯，早晚对不上。
+
+## 改了什么
+
+新增 `AGENTS.md`（仓库根），把散在对话、记忆与 DSHWS 工作区里的约定**沉淀成项目级**：
+
+| 节 | 内容 |
+|---|---|
+| 这个项目是什么 / 先看哪里 | 一段话 + 指向 `docs/WARMTH.txt`、`STARMAP.txt`、`NOTIFY.txt`、`reference/`、`BACKLOG.txt`、`changes/` |
+| 常用命令 | 起应用、跑测试、看积温、起复核——**含界面入口与命令窗口支持的命令** |
+| **红线** | ① 不改记忆与设定的实际内容、派生文件不手改；② **界面不做真终端**（白名单分发器是安全边界）；③ **用户输入不可信，前端不用 `innerHTML` 拼**（有实测 XSS 案例） |
+| 报告格式 | 沿用 DSHWS 的五条 |
+| 改动登记 | 判据、角色分工、只增不改、验证只写跑过的 |
+| **复核是默认步骤** | 五步闭环 + `tools/review.ps1` + 「复核期间作者不要动代码」+ 为什么值得（24 条真问题的账） |
+| 跨 agent 协作 | 结论走文件、两套存储、`--workspace`、参考仓库在仓库外 |
+| **本机环境的坑** | GBK 控制台（一个 `⟵` 崩过）、UTF-8 BOM（`.ps1` 与 JSON 都撞过）、提交信息 BOM、Cursor CLI 的 HTTP/1.1、端口是 **7788** 不是 8000 |
+
+`docs/BACKLOG.txt` 的 E 节补了两条：会话迁移、沙盒人格的约定。
+
+## 验证
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+# Ran 202 tests ... OK (skipped=1)      ← 本次只加了文档，测试数不变
+```
+
+文档里的命令与端口是**这几次实际跑过的**（`m 7788`、`--watch`、`review.ps1`、`--stats`）。
+
+顺带确认了两件事：
+
+- `persona/test/`（复核用的沙盒）**不会出现在人格下拉框里**：`persona.list_personas()` 返回
+  `['holmes-test', 'miracii']`，没有 `test` ✓ 它只在 `persona/` 下留了两个派生文件，且已被 `.gitignore` 覆盖。
+- 沙盒的用法（`--persona test`）可以继续当"不碰真实数据"的演练场。
+
+## 风险与未决
+
+- **与 DSHWS/AGENTS.md 会重复**：迁移完成后，工作区那份应当**只留跨项目的通用部分**，
+  项目细节以本文件为准；两份都写死同样内容迟早分叉。
+- 本文件里的"红线"来自今天的两次实际教训（XSS、滚不到按钮）与一次流程事故（复核期间并行改代码），
+  **不是通用最佳实践**——新踩到坑就往上加。
+- 迁移本身还没做（要确认会话空闲 + 精确 id），见 `docs/BACKLOG.txt` E 节。
+
+## 复核
+
+（留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
