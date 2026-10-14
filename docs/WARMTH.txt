@@ -167,6 +167,24 @@ pride_block = 0.50                        不随 lift 变
 
 > 换过端口就用 `--port` 那个值。应用窗口本身就是这个地址（pywebview），也可以直接在浏览器打开同一个 URL。
 
+### 3.1.1 应用里那个命令窗口（`日志` / 侧栏底部）
+
+底部的命令框现在多三条命令，和 `ls` / `open` 放在一起：
+
+| 命令 | 作用 |
+|---|---|
+| `warmth` | 一次性打印六轴、判定、门槛、节奏、最近台账 |
+| `warmth watch` | 同上，每 3 秒自动刷新；再输一次 `warmth watch` 停止（换人格或跑别的命令也会停） |
+| `mark <结论> <说明>` | 就地标注。结论取 `should_speak` / `should_stay_silent` / `unsure`，省略则默认第一项 |
+
+```text
+warmth
+warmth watch
+mark should_stay_silent 他在开会，这时候插话很怪
+```
+
+标注要填**维度辨析**（`blame`）和标签时，用面板 `/warmth` 的表单；命令行只做最小版本。
+
 ### 3.2 命令行（想脚本化或离开界面时）
 
 | 命令 | 看什么 |

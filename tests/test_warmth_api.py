@@ -78,6 +78,24 @@ class WarmthApiTests(unittest.TestCase):
         self.assertEqual(kwargs["blame"], [])
         self.assertEqual(kwargs["tags"], [])
 
+    def test_the_command_window_knows_the_warmth_commands(self):
+        """命令窗口是白名单分发器：这三条命令被删掉时，这条测试要响。
+
+        真正的行为只能在浏览器里点，这里守的是"入口还在"。
+        """
+        response = self.client.get("/static/console.js")
+        self.assertEqual(response.status_code, 200)
+        body = response.text
+        for needle in ('cmd === "warmth"', 'rest[0] === "watch"', 'cmd === "mark"', "/api/warmth/mark"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, body)
+
+    def test_the_command_window_help_lists_them(self):
+        body = self.client.get("/static/console.js").text
+        for needle in ("warmth watch", "mark <结论> <说明>"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, body)
+
 
 if __name__ == "__main__":
     unittest.main()

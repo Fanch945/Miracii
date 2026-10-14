@@ -23,6 +23,7 @@
   let sections = [];
   let mode = "memory";
   let currentId = "";
+  let watchTimer = null; // warmth watch 的定时器；换人格或跑别的命令时停掉
 
   function setOpen(open) {
     document.body.classList.toggle("dock-open", open);
@@ -163,7 +164,100 @@
     if (!quiet) cmdInput.blur();
   }
 
-  function runCommand(raw) {
+  function warmthText(data) {
+    const bar = (value, low, high) => {
+      const width = 12;
+      const filled = Math.max(0, Math.min(width, Math.round(((value - low) / (high - low)) * width)));
+      return "█".repeat(filled) + "·".repeat(width - filled);
+    };
+    const axes = data.axes || {};
+    const rows = [
+      ["connection", axes.connection, 0, 1, 3],
+      ["pride", axes.pride, -1, 1, 2],
+      ["valence", axes.valence, -1, 1, 2],
+      ["arousal", axes.arousal, -1, 1, 2],
+      ["immersion", axes.immersion, 0, 1, 2],
+      ["hesitation", axes.hesitation, 0, 1, 2],
+    ];
+    const lines = [`# 积温 ${data.persona}  ${String(data.at || "").slice(11, 19)}`];
+    for (const [name, value, low, high, digits] of rows) {
+      const shown = Number(value ?? 0);
+      lines.push(`  ${name.padEnd(11)}${shown >= 0 && low < 0 ? "+" : " "}${shown.toFixed(digits)}  ${bar(shown, low, high)}`);
+    }
+    const fired = (data.gates || []).filter((g) => g.fired).map((g) => g.gate);
+    lines.push("");
+    lines.push(`  判定    ${fired.length ? fired.join(" / ") : "没触发"}`);
+    const nearest = (data.gates || []).filter((g) => g.gap != null).sort((a, b) => a.gap - b.gap)[0];
+    if (!fired.length && nearest) lines.push(`  最接近  ${nearest.gate}，还差 ${nearest.gap.toFixed(3)}`);
+    lines.push(`  内心    ${data.words || "—"}`);
+    lines.push(`  写法    ${data.style || "—"}`);
+    const t = data.thresholds || {};
+    lines.push(`  门槛    观察 ${Number(t.observation).toFixed(2)}  开口 ${Number(t.contact).toFixed(2)}  强制 ${Number(t.force).toFixed(2)}`);
+    const mins = Math.round((data.seconds_until_due || 0) / 60);
+    const cd = data.cooldown_left > 0 ? `  冷却剩 ${data.cooldown_left} 分钟` : "";
+    lines.push(`  节奏    ${data.user_state}  每 ${data.tick_minutes} 分钟一拍，距下一拍 ${mins} 分钟  积压 ${data.backlog}${cd}`);
+    const recent = (data.recent || []).slice(-4);
+    if (recent.length) {
+      lines.push("");
+      lines.push("  最近");
+      for (const row of recent) {
+        const at = String(row.at || "").slice(5, 16).replace("T", " ");
+        if (row.kind === "mark") lines.push(`    ${at}  [标注] ${row.verdict}  ${row.text || ""}`);
+        else if (row.kind === "speak") lines.push(`    ${at}  [开口]  ${String(row.text || "").slice(0, 40)}`);
+        else lines.push(`    ${at}  [tick]  ${(row.gates || []).join("/") || "无触发"}`);
+      }
+    }
+    lines.push("");
+    lines.push(`  标注请用面板 /warmth，或在这里输入：mark <should_speak|should_stay_silent|unsure> <说明>`);
+    return lines.join("\n");
+  }
+
+  async function showWarmth() {
+    try {
+      const res = await fetch("/api/warmth", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.statusText);
+      meta.textContent = `积温 · ${data.persona}${watchTimer ? " · 每 3 秒刷新中" : ""}`;
+      writeView(warmthText(data));
+    } catch (exc) {
+      meta.textContent = "积温";
+      writeView(`读不到积温：${exc.message}`);
+    }
+  }
+
+  function stopWatch() {
+    if (watchTimer) {
+      clearInterval(watchTimer);
+      watchTimer = null;
+    }
+  }
+
+  function startWatch() {
+    stopWatch();
+    watchTimer = setInterval(showWarmth, 3000);
+  }
+
+  async function markFromConsole(rest) {
+    const verdicts = ["should_speak", "should_stay_silent", "unsure"];
+    const first = rest[0] || "";
+    const verdict = verdicts.includes(first) ? first : "should_speak";
+    const text = (verdicts.includes(first) ? rest.slice(1) : rest).join(" ");
+    try {
+      const res = await fetch("/api/warmth/mark", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, verdict }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.statusText);
+      meta.textContent = "标注";
+      writeView(`已记下：[${data.verdict}] ${data.text || "（无说明）"}\n想看的话输入 warmth`);
+    } catch (exc) {
+      writeView(`标注失败：${exc.message}`);
+    }
+  }
+
+  async function runCommand(raw) {
     const line = raw.trim();
     if (!line) return;
     const [cmd, ...rest] = line.split(/\s+/);
@@ -171,9 +265,15 @@
     if (cmd === "help") {
       meta.textContent = "命令";
       writeView(
-        ["ls                 当前人格的记忆文件，日期从早到晚", "open <文件id>      读取记忆文件", "runtime            切到这位的监督", "refresh            刷新"].join(
-          "\n"
-        )
+        [
+          "ls                 当前人格的记忆文件，日期从早到晚",
+          "open <文件id>      读取记忆文件",
+          "runtime            切到这位的监督",
+          "warmth             看她此刻的积温（六轴、判定、门槛、台账）",
+          "warmth watch       同上，每 3 秒自动刷新（再输一次 warmth watch 停止）",
+          "mark <结论> <说明>  就地标注，结论取 should_speak / should_stay_silent / unsure",
+          "refresh            刷新",
+        ].join("\n")
       );
       return;
     }
@@ -182,10 +282,30 @@
       return;
     }
     if (cmd === "runtime") {
+      stopWatch();
       setMode("runtime");
       return;
     }
+    if (cmd === "warmth") {
+      if (rest[0] === "watch") {
+        if (watchTimer) {
+          stopWatch();
+          meta.textContent = "积温 · 已停止刷新";
+          return;
+        }
+        startWatch();
+      } else {
+        stopWatch();
+      }
+      await showWarmth();
+      return;
+    }
+    if (cmd === "mark") {
+      await markFromConsole(rest);
+      return;
+    }
     if (cmd === "ls") {
+      stopWatch();
       const lines = [`# ${personaName || personaId}`];
       for (const section of sections) {
         lines.push(`  ${section.label}`);
@@ -200,6 +320,7 @@
         writeView("用法：open transcript/miracii/2026-09-02.txt");
         return;
       }
+      stopWatch();
       setMode("memory");
       openFile(arg);
       return;
@@ -257,6 +378,7 @@
       personaId = id;
       if (name) personaName = name;
       currentId = "";
+      stopWatch(); // 换人了，别让上一位的积温继续刷
       if (document.body.classList.contains("dock-open")) refresh();
     },
     showRuntime() {
