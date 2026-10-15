@@ -1,0 +1,65 @@
+# 对话注入六轴 + 开机补偿
+
+- 日期：2026-10-15
+- 作者：DSH（DeepSeek Harness agent）
+- 关联提交：本文件所在提交
+- 关联设计文档：[docs/WARMTH.txt](../WARMTH.txt) §1.1 / §1.6、[docs/WARMTH-NOTES.txt](../WARMTH-NOTES.txt)
+- 前置记录：[2026-10-15-warmth-usability.txt](2026-10-15-warmth-usability.txt)
+
+## 背景
+
+人拍板两件事（原话要点）：
+
+1. **先做对话 delta 注入**——它一次解决"骄傲不动"（监督里写着她小得意，骄傲却始终 0.06）与将来"灵感机制"的通道。
+2. **开机补偿先 60 分钟**——"我想这段时间也是用户最希望和她对话的时间"。
+
+同时人提出两个设计质疑，都成立：
+
+- **`resolve` 与 `connection` 重复**：connection 本身就是"有多想说话"，且复利加速已经在表达"越到后期越迫切"。
+  → **砍掉 `resolve`**；犹豫只留一根 `hesitation`，语义收紧为**不确定度**；真正不可替代的是将来那根**叛逆值**。
+- **没有"人格生活化"，这种注入会不会太局限**：会——环境 API 未到之前，delta 全来自对话，她的状态会成为对话的函数。
+  → 但这条通道正是环境/灵感事件将来要走的**同一个插座**；因此每笔都带 **`source` 标签**并逐轴夹紧，
+  以后能量出"多少是她自己长出来的"。
+
+## 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `app/warmth.py` | ① `Config.wake_bonus_minutes = 60.0` + 全套接线（template / known / 校验 / `--show`）；`Engine.tick(..., catch_up_minutes)`；`ambient_tick` 在空档被截断时补一次，并回报 `wake_bonus`。② 新增 `CONVERSATION_CAPS` / `CONVERSATION_SOURCES` / `DELTA_LOG_THRESHOLD` / `parse_deltas()` / `apply_conversation()`；`review()` 会数"明显的情绪注入"并列出最近几笔 |
+| `app/heartbeat.py` | `_JUDGE_PROMPT` + `judge_conversation()`：一轮结束后让轻量模型把这一轮翻译成六轴增减，**失败返回空**（宁可不动，不瞎猜） |
+| `app/main.py` | `_judge_turn_async()`：在助手回复存下之后**后台线程**跑判断 + 注入；全程吞异常——**她能不能回话不取决于这次判断** |
+| `docs/WARMTH.txt` | §1.1 补开机补偿；新增 §1.6「对话与环境事件怎么改她」 |
+| `docs/WARMTH-NOTES.txt` | 顶部加"人已拍板"更新块（砍 resolve、60 分钟、已接注入） |
+| `tests/test_warmth.py` | 新增 `DeltaTests`（9 项）+ `WakeBonusTests`（3 项） |
+
+## 验证
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+# Ran 228 tests ... OK (skipped=1)      ← 上一步 216
+```
+
+关键几条：
+
+| 断言 | 结果 |
+|---|---|
+| `parse_deltas` 从散文里抠出 JSON / 垃圾与未知轴丢弃 / `NaN` 丢弃 / `0` 视为无变化 | ✅ |
+| 逐轴夹紧：`pride 5.0 → 0.3`、`connection −9.0 → −0.5` | ✅ |
+| 只有最大一笔 ≥ 0.1 才进台账（`pride 0.02` 不写行） | ✅ |
+| `source` 原样保留；不认识的值降级成 `chat` | ✅ |
+| 开机补偿：关机 5 小时 → `applied 120`（60 上限 + 60 补偿）、`wake_bonus 60`；只跑 30 分钟 → 无补偿 | ✅ |
+| 补偿可配、可关（`wake_bonus_minutes = 0` → `applied 60`） | ✅ |
+| 结构性测试仍拦住"字段加了没接线"（`wake_bonus_minutes` 已登记进样本表） | ✅ |
+
+## 风险与未决
+
+- **判断质量未验证**：`deepseek-flash` 判"这一轮让她骄傲了多少"准不准，没人知道。它每条消息都会跑一次
+  （后台线程、每次一次模型调用），**这是新增的常态开销**；不合适就关掉 `_judge_turn_async` 的调用点。
+- **幅度上限是我定的**（照参照实现）：±0.3 / connection −0.5~+0.3。真实该多大要等标注数据。
+- **`source` 目前只有 `chat` 一种真实来源**；`env` / `inspiration` 是给"人格生活化"预留的，
+  现在没有任何东西会产生它们。
+- **叛逆值、犹豫的随机外圈**（含种子入账）都还没做，见 `WARMTH-NOTES.txt`。
+
+## 复核
+
+（留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）

@@ -137,6 +137,9 @@ class Config:
     # 单次空闲 tick 最多按多少分钟推进。停机一夜不会一次性补满——
     # 她并没有在关机时"等着"，一开机就扑上来也不像她。改这个值就能改这个取舍。
     max_tick_minutes: float = MAX_TICK_MINUTES
+    # 应用关着时她并不"在等"，所以单拍只按 60 分钟算。但**开机那一下**补一点：
+    # 人希望"回来时她已经在想你"，而不是从 0 开始。默认 60 分钟；0 = 关掉这个补偿。
+    wake_bonus_minutes: float = 60.0
     # `user_state` 由轻量模型从最近的对话推断；超过这个时长就不再采信。
     user_state_ttl_minutes: float = 180.0
     # 只有连接需求逼近开口线时才值得花一次模型调用（见 needs_user_state）
@@ -219,6 +222,7 @@ def template() -> dict:
         "user_state_lift": {"active": 1.0, "busy": 1.35, "away": 1.1, "sleeping": 2.0},
         "speak_cooldown_minutes": 45.0,
         "max_tick_minutes": 60.0,
+        "wake_bonus_minutes": 60.0,
         "reply_delta": {"connection": -0.25, "valence": 0.05, "arousal": -0.15, "hesitation": -0.20},
         "extra_axes": [],
     }
@@ -288,6 +292,7 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
         "persona",
         "speak_cooldown_minutes",
         "max_tick_minutes",
+        "wake_bonus_minutes",
         "user_state_ttl_minutes",
         "user_state_trigger_ratio",
         "reply_delta",
@@ -317,6 +322,7 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
     cooldown = _positive("speak_cooldown_minutes", base.speak_cooldown_minutes, allow_zero=True)
     # 复核抓到：字段加进 Config 却没接进 load_config，等于"可配"是空话
     max_tick = _positive("max_tick_minutes", base.max_tick_minutes)
+    wake_bonus = _positive("wake_bonus_minutes", base.wake_bonus_minutes, allow_zero=True)
     state_ttl = _positive("user_state_ttl_minutes", base.user_state_ttl_minutes, allow_zero=True)
 
     ratio_raw = raw.get("user_state_trigger_ratio")
@@ -405,6 +411,7 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
         user_state_lift=lifts,
         speak_cooldown_minutes=cooldown,
         max_tick_minutes=max_tick,
+        wake_bonus_minutes=wake_bonus,
         user_state_ttl_minutes=state_ttl,
         user_state_trigger_ratio=ratio,
         reply_delta=reply,
@@ -431,6 +438,7 @@ def effective_config(config: Config) -> dict:
         "user_state_lift": dict(config.user_state_lift),
         "speak_cooldown_minutes": config.speak_cooldown_minutes,
         "max_tick_minutes": config.max_tick_minutes,
+        "wake_bonus_minutes": config.wake_bonus_minutes,
         "user_state_ttl_minutes": config.user_state_ttl_minutes,
         "user_state_trigger_ratio": config.user_state_trigger_ratio,
         "reply_delta": dict(config.reply_delta),
@@ -697,6 +705,104 @@ def undo_user_message(persona_id: str | None = None, *, path: Path | None = None
     return engine.snapshot()
 
 
+# ── 对话 → 六轴的一次性注入 ──────────────────────────
+# 参照实现的幅度约定：前三轴 ±0.3，connection −0.5~+0.3。这里逐轴再收紧一点。
+CONVERSATION_CAPS: dict[str, tuple[float, float]] = {
+    "connection": (-0.5, 0.3),
+    "pride": (-0.3, 0.3),
+    "valence": (-0.3, 0.3),
+    "arousal": (-0.3, 0.3),
+    "immersion": (-0.3, 0.3),
+    "hesitation": (-0.5, 0.3),
+}
+# `source` 不是装饰：将来环境/灵感事件接进来之后，要靠它分清
+# "她的状态里有多少是自己长出来的、多少是被这一轮对话带动的"（见 docs/WARMTH-NOTES.txt）。
+CONVERSATION_SOURCES = ("chat", "reply", "env", "inspiration")
+# 只有这一步动得够大才值得进台账——否则每一轮对话都写一行，台账又会被淹掉
+DELTA_LOG_THRESHOLD = 0.1
+
+
+def parse_deltas(text: str) -> dict:
+    """从模型的输出里抽出六轴增减。**抽不出来就返回空——绝不猜她的心情。**"""
+    if not text:
+        return {}
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        raw = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for name, value in raw.items():
+        if name not in CONVERSATION_CAPS:
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number) and number:
+            out[name] = number
+    return out
+
+
+def apply_conversation(
+    persona_id: str | None = None,
+    deltas: dict | None = None,
+    *,
+    source: str = "chat",
+    note: str = "",
+    path: Path | None = None,
+    log: Path | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """把"这一轮发生了什么"翻译成六轴的一次性增减。
+
+    认不出的轴、坏值（NaN / 非数字）一律丢弃；每根轴按 `CONVERSATION_CAPS` 夹紧。
+    **绝不因为模型胡说就把她的状态推到边界。**
+    """
+    stamp = now or _now()
+    cleaned: dict[str, float] = {}
+    for name, value in (deltas or {}).items():
+        if name not in CONVERSATION_CAPS:
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(number):
+            continue
+        low, high = CONVERSATION_CAPS[name]
+        clamped = max(low, min(high, number))
+        if clamped:
+            cleaned[name] = round(clamped, 4)
+    if not cleaned:
+        return {"applied": {}, "source": source, "changed": False}
+
+    config, _ = load_config(persona_id)
+    state, _ = load_state(persona_id, path=path)
+    engine = Engine(config, state)
+    engine.apply_delta(**cleaned)
+    save_state(persona_id, engine.state, path=path)
+
+    if max(abs(value) for value in cleaned.values()) >= DELTA_LOG_THRESHOLD:
+        append_log(
+            persona_id,
+            {
+                "kind": "delta",
+                "at": stamp.isoformat(timespec="seconds"),
+                "source": source if source in CONVERSATION_SOURCES else "chat",
+                "note": str(note or "")[:200],
+                "applied": cleaned,
+                **state_to_dict(engine.state),
+            },
+            path=log,
+        )
+    return {"applied": cleaned, "source": source, "changed": True, "snapshot": engine.snapshot()}
+
+
 def tick_minutes(persona_id: str | None = None) -> float:
     """空闲 tick 的间隔：读 `schedule.txt` 里那个一直没人用的 `tick_minutes`。"""
     from . import supervisor
@@ -750,16 +856,22 @@ def ambient_tick(
         # 她手上有没有事，决定了连接需求涨得快不快（每拍重申一次，积压还在她就一直在忙）。
         # `at=stamp` 不能省：活动时钟必须和这一拍的时钟一致，否则衰减会按两个时钟算。
         engine.set_activity(activity_for_backlog(backlog), at=stamp)
-    fired = engine.tick(elapsed, now=stamp, minutes_since_message=minutes_since_message)
+    # 空档超过单拍上限 = 应用刚被重新打开 → 给一次开机补偿（`wake_bonus_minutes`）
+    gap_was_clamped = elapsed > resolved.max_tick_minutes
+    bonus = resolved.wake_bonus_minutes if gap_was_clamped else 0.0
+    fired = engine.tick(
+        elapsed, now=stamp, minutes_since_message=minutes_since_message, catch_up_minutes=bonus
+    )
     gates_now = gate_set(engine, fired)
     loggable = gates_now != sorted(engine.state.last_gates or [])
     engine.state.last_gates = gates_now
-    applied = min(elapsed, engine.config.max_tick_minutes)
+    applied = min(elapsed, engine.config.max_tick_minutes + bonus)
     save_state(persona_id, engine.state, path=path)
     result = {
         "elapsed": round(elapsed, 2),
         "applied": round(applied, 2),
         "capped": elapsed > engine.config.max_tick_minutes,
+        "wake_bonus": round(applied - min(elapsed, engine.config.max_tick_minutes), 2),
         "first": False,
         "fired": fired,
         "gates": gates_now,
@@ -1040,7 +1152,16 @@ def review(persona_id: str | None = None, *, days: float = 3, limit: int = 60, p
         return f"近 {days:g} 天没有记录（她还没醒过，或者一直没逼近门槛）"
     ticks = [row for row in rows if row.get("kind") == "tick"]
     marks = [row for row in rows if row.get("kind") == "mark"]
-    lines = [f"近 {days:g} 天：{len(ticks)} 次值得记的 tick，{len(marks)} 条人工标注"]
+    deltas = [row for row in rows if row.get("kind") == "delta"]
+    lines = [
+        f"近 {days:g} 天：{len(ticks)} 次值得记的 tick，{len(deltas)} 次明显的情绪注入，"
+        f"{len(marks)} 条人工标注"
+    ]
+    if deltas:
+        lines.append("最近的注入：")
+        for row in deltas[-limit:]:
+            moved = "、".join(f"{name} {value:+.2f}" for name, value in (row.get("applied") or {}).items())
+            lines.append(f"  {_short_time(row.get('at'))}  [{row.get('source')}] {moved}  {row.get('note') or ''}")
     if marks:
         lines.append("人工标注：")
         for row in marks[-limit:]:
@@ -1156,11 +1277,23 @@ class Engine:
         return (-1.0, 1.0)
 
     # ── 推进 ────────────────────────────────────────
-    def tick(self, minutes: float, *, now: datetime | None = None, minutes_since_message: float | None = None) -> list[dict]:
-        """推进 `minutes` 分钟并返回本次触发的动作。`minutes <= 0` 原样返回空。"""
+    def tick(
+        self,
+        minutes: float,
+        *,
+        now: datetime | None = None,
+        minutes_since_message: float | None = None,
+        catch_up_minutes: float = 0.0,
+    ) -> list[dict]:
+        """推进 `minutes` 分钟并返回本次触发的动作。`minutes <= 0` 原样返回空。
+
+        `catch_up_minutes` 是给运行时的**开机补偿**留的口子：单拍上限照旧 60 分钟，
+        但允许这一次多走一点。引擎自己不判断"该不该补"——那是 `ambient_tick` 的事。
+        """
         if not minutes or minutes <= 0:
             return []
-        mins = min(float(minutes), self.config.max_tick_minutes)
+        ceiling = self.config.max_tick_minutes + max(0.0, catch_up_minutes)
+        mins = min(float(minutes), ceiling)
         stamp = now or _now()
         rates = self.config.rates
         state = self.state

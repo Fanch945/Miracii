@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import APP_CHANNEL, APP_VERSION, clock, db, files, media, notices, persona, starmap, studio, warmth
+from . import APP_CHANNEL, APP_VERSION, clock, db, files, heartbeat, media, notices, persona, starmap, studio, warmth
 from .llm import LlmError, MODEL, stream_reply
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -138,6 +139,23 @@ def index() -> FileResponse:
 @app.get("/studio")
 def studio_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "studio.html")
+
+
+def _judge_turn_async(persona_id: str, user_text: str, reply_text: str) -> None:
+    """一轮结束后，让轻量模型把这一轮翻译成六轴增减。
+
+    **后台线程 + 全程吞异常**：她能不能回话不取决于这一次判断；判断失败就当她没被影响。
+    """
+
+    def run() -> None:
+        try:
+            deltas = heartbeat.judge_conversation(persona_id, user_text, reply_text)
+            if deltas:
+                warmth.apply_conversation(persona_id, deltas, source="chat", note=user_text[:60])
+        except Exception:
+            pass
+
+    threading.Thread(target=run, name="miracii-warmth-judge", daemon=True).start()
 
 
 class StudioFile(BaseModel):
@@ -485,6 +503,8 @@ async def chat(body: ChatRequest) -> StreamingResponse:
         saved = db.add_message(sid, "assistant", reply)
         files.append_turn(sid, speaker, "assistant", reply, saved["created_at"])
         clock.on_chat(sid)
+        # 这一轮让她的内心动了多少——后台判，不阻塞这次回复
+        _judge_turn_async(warmth_pid, stored, reply)
         yield _sse("done", _public_message(saved))
 
     return StreamingResponse(

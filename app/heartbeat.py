@@ -350,6 +350,26 @@ def _presence(persona_id: str) -> str | None:
     return None
 
 
+_JUDGE_PROMPT = (
+    "下面是一轮对话（他说的话 + 她的回话）。判断这一轮让她的内心发生了什么变化，"
+    "只回一个 JSON 对象，键取 connection / pride / valence / arousal / immersion / hesitation，"
+    "值在 -0.3 到 0.3 之间（connection 最低可到 -0.5）。没有明显变化就回 {}。不要解释。\n"
+    "参考：被夸或被认可 → pride 正值；开心、被逗 → valence 正值；被冷落、被敷衍 → valence 负值；"
+    "聊得投入 → immersion 正值；激动、心跳快 → arousal 正值；想说又没说、拿不准 → hesitation 正值。"
+)
+
+
+def judge_conversation(persona_id: str, user_text: str, reply_text: str) -> dict:
+    """让轻量模型把"这一轮"翻译成六轴增减。失败返回空 dict——宁可不动，也不瞎猜。"""
+    if not (user_text or reply_text):
+        return {}
+    excerpt = f"他：{(user_text or '')[:400]}\n她：{(reply_text or '')[:400]}"
+    answer = llm.complete_reply(
+        [{"role": "user", "content": f"{_JUDGE_PROMPT}\n\n{excerpt}"}], max_tokens=120, temperature=0.0
+    )
+    return warmth.parse_deltas(answer)
+
+
 def run_warmth_tick(persona_id: str) -> dict:
     """空闲 tick：积温回答"现在想不想开口"，记忆那边照旧归巩固链。
 

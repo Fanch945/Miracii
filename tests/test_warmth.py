@@ -445,6 +445,7 @@ class ConfigTests(unittest.TestCase):
                 "user_state_lift",
                 "speak_cooldown_minutes",
                 "max_tick_minutes",
+                "wake_bonus_minutes",
                 "user_state_ttl_minutes",
                 "user_state_trigger_ratio",
                 "reply_delta",
@@ -467,6 +468,7 @@ class ConfigTests(unittest.TestCase):
             "user_state_lift": {"busy": 2.0},
             "speak_cooldown_minutes": 30.0,
             "max_tick_minutes": 120.0,
+            "wake_bonus_minutes": 15.0,
             "user_state_ttl_minutes": 30.0,
             "user_state_trigger_ratio": 0.9,
             "reply_delta": {"connection": -0.1},
@@ -1330,6 +1332,121 @@ class PresenceTests(unittest.TestCase):
             heartbeat.run_warmth_tick("x")
         model.assert_called_once()
         setter.assert_called_once_with("x", "busy")
+
+
+class DeltaTests(unittest.TestCase):
+    """对话 → 六轴的一次性注入：她是被这一轮推动的，还是自己长出来的。"""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="warmth-delta-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        (self.root / "memory").mkdir(parents=True, exist_ok=True)
+        patcher = mock.patch.object(persona, "folder", lambda persona_id=None: self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.state = self.root / "memory" / warmth.STATE_NAME
+        self.log = self.root / "memory" / warmth.LOG_NAME
+        self.start = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
+
+    # ── 解析：模型爱说话，抽不出来就当没发生 ──
+    def test_a_clean_json_object_is_read(self):
+        self.assertEqual(warmth.parse_deltas('{"pride": 0.2}'), {"pride": 0.2})
+
+    def test_json_wrapped_in_prose_is_still_read(self):
+        self.assertEqual(warmth.parse_deltas('好的：{"valence": -0.15} 就这样'), {"valence": -0.15})
+
+    def test_garbage_and_unknown_axes_are_dropped(self):
+        self.assertEqual(warmth.parse_deltas("我看不太出来"), {})
+        self.assertEqual(warmth.parse_deltas('{"nonsense": 1, "pride": "很高"}'), {})
+        self.assertEqual(warmth.parse_deltas('{"pride": NaN}'), {})
+        self.assertEqual(warmth.parse_deltas('{"pride": 0}'), {})  # 0 等于没变
+
+    # ── 应用：夹紧、只认认识的轴、失败不动 ──
+    def test_the_delta_is_clamped_per_axis(self):
+        warmth.save_state(None, warmth.State(), path=self.state)
+        result = warmth.apply_conversation(None, {"pride": 5.0, "connection": -9.0}, path=self.state, log=self.log)
+        self.assertEqual(result["applied"]["pride"], 0.3)  # 参照实现的幅度上限
+        self.assertEqual(result["applied"]["connection"], -0.5)
+        loaded, _ = warmth.load_state(path=self.state)
+        self.assertAlmostEqual(loaded.pride, 0.3)
+
+    def test_an_empty_or_bad_delta_changes_nothing(self):
+        warmth.save_state(None, warmth.State(valence=0.5), path=self.state)
+        self.assertFalse(warmth.apply_conversation(None, {}, path=self.state, log=self.log)["changed"])
+        self.assertFalse(warmth.apply_conversation(None, {"谁": 1}, path=self.state, log=self.log)["changed"])
+        loaded, _ = warmth.load_state(path=self.state)
+        self.assertAlmostEqual(loaded.valence, 0.5)
+
+    def test_only_a_noticeable_turn_reaches_the_ledger(self):
+        warmth.save_state(None, warmth.State(), path=self.state)
+        warmth.apply_conversation(None, {"pride": 0.02}, path=self.state, log=self.log)  # 太轻，不记
+        self.assertFalse(self.log.exists())
+        warmth.apply_conversation(None, {"pride": -0.25}, source="chat", path=self.state, log=self.log)
+        rows = warmth.read_log(path=self.log)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["kind"], "delta")
+        self.assertEqual(rows[0]["source"], "chat")
+
+    def test_the_source_tag_survives(self):
+        warmth.save_state(None, warmth.State(), path=self.state)
+        warmth.apply_conversation(None, {"valence": 0.3}, source="inspiration", note="想到个好玩的", path=self.state, log=self.log)
+        self.assertEqual(warmth.read_log(path=self.log)[0]["source"], "inspiration")
+
+    def test_an_unknown_source_degrades_to_chat(self):
+        warmth.save_state(None, warmth.State(), path=self.state)
+        warmth.apply_conversation(None, {"valence": 0.3}, source="瞎写", path=self.state, log=self.log)
+        self.assertEqual(warmth.read_log(path=self.log)[0]["source"], "chat")
+
+    def test_review_counts_injections(self):
+        warmth.save_state(None, warmth.State(), path=self.state)
+        warmth.apply_conversation(None, {"pride": 0.3}, path=self.state, log=self.log, now=self.start)
+        text = warmth.review(None, days=1, path=self.log, now=self.start)
+        self.assertIn("1 次明显的情绪注入", text)
+        self.assertIn("pride +0.30", text)
+
+
+class WakeBonusTests(unittest.TestCase):
+    """关机不涨，但开机那一下补一点——人定的是 60 分钟。"""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="warmth-wake-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        (self.root / "memory").mkdir(parents=True, exist_ok=True)
+        patcher = mock.patch.object(persona, "folder", lambda persona_id=None: self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.state = self.root / "memory" / warmth.STATE_NAME
+        self.start = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
+
+    def run_gap(self, minutes: float) -> dict:
+        state = warmth.State()
+        state.last_tick = self.start - timedelta(minutes=minutes)
+        warmth.save_state(None, state, path=self.state)
+        return warmth.ambient_tick(now=self.start, path=self.state)
+
+    def test_the_shipped_default_is_sixty_minutes(self):
+        self.assertEqual(warmth.defaults().wake_bonus_minutes, 60.0)
+
+    def test_a_long_gap_gets_the_bonus_but_a_short_one_does_not(self):
+        long_gap = self.run_gap(300)  # 关机 5 小时
+        self.assertTrue(long_gap["capped"])
+        self.assertAlmostEqual(long_gap["applied"], 120.0)  # 60 上限 + 60 补偿
+        self.assertAlmostEqual(long_gap["wake_bonus"], 60.0)
+
+        short_gap = self.run_gap(30)  # 一直在跑
+        self.assertFalse(short_gap["capped"])
+        self.assertAlmostEqual(short_gap["applied"], 30.0)
+        self.assertAlmostEqual(short_gap["wake_bonus"], 0.0)
+
+    def test_the_bonus_is_configurable_and_can_be_switched_off(self):
+        config = warmth.defaults()
+        config = replace(config, wake_bonus_minutes=0.0)
+        state = warmth.State()
+        state.last_tick = self.start - timedelta(hours=5)
+        warmth.save_state(None, state, path=self.state)
+        result = warmth.ambient_tick(now=self.start, config=config, path=self.state)
+        self.assertAlmostEqual(result["applied"], 60.0)
+        self.assertAlmostEqual(result["wake_bonus"], 0.0)
 
 
 if __name__ == "__main__":
