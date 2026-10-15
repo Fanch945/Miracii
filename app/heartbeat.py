@@ -291,6 +291,65 @@ def _infer_user_state(persona_id: str) -> str:
     return "active"
 
 
+_PRESENCE_AWAY_MINUTES = 15.0  # 她说完话、这么久没人应，就当对方走开了
+
+
+def _last_turn(persona_id: str) -> tuple[str | None, float | None]:
+    """最后一条消息**是谁说的**、距今多少分钟。读 jsonl（新格式），老 txt 兜底。"""
+    folder = files.TRANSCRIPT_DIR / persona_id
+    if not folder.is_dir():
+        return None, None
+    candidates = sorted(folder.glob("*.jsonl")) or sorted(folder.glob("*.txt"))
+    if not candidates:
+        return None, None
+    newest = max(candidates, key=lambda path: path.stat().st_mtime)
+    role: str | None = None
+    stamp: datetime | None = None
+    for line in newest.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            if "你：" in line:
+                role = "user"
+                found = _STAMP.search(line)
+                if found:
+                    stamp = _parse_local(found.group(1).replace(" ", "T")) or stamp
+            elif "：" in line:
+                role = "assistant"
+            continue
+        if isinstance(row, dict) and row.get("role") in {"user", "assistant"}:
+            role = str(row["role"])
+            parsed = _parse_local(str(row.get("created_at") or ""))
+            if parsed:
+                stamp = parsed
+    if stamp is None:
+        return role, None
+    return role, max(0.0, (datetime.now().astimezone() - stamp).total_seconds() / 60.0)
+
+
+def _presence(persona_id: str) -> str | None:
+    """确定性地判断"他在不在"——比让模型猜可靠，也不花钱。
+
+    - 最后一条是**他**说的、还在短期窗口里 → `active`
+    - 最后一条是**她**说的、过了十来分钟没人应 → `away`（他走开了）
+    - 其余 → `None`，交给模型
+
+    人报过的问题：她先开口，然后才可能知道对方在不在；以前没有任何"暂离"判断。
+    """
+    role, gap = _last_turn(persona_id)
+    if role is None or gap is None:
+        return None
+    live = float(supervisor.parse_schedule(persona_id).get("stm_minutes") or 5)
+    if role == "user" and gap <= live:
+        return "active"
+    if role == "assistant" and gap >= _PRESENCE_AWAY_MINUTES:
+        return "away"
+    return None
+
+
 def run_warmth_tick(persona_id: str) -> dict:
     """空闲 tick：积温回答"现在想不想开口"，记忆那边照旧归巩固链。
 
@@ -298,18 +357,22 @@ def run_warmth_tick(persona_id: str) -> dict:
     那些时刻它被要求整理记忆，而不是判断想不想说话）。
     """
     if warmth.needs_user_state(persona_id):
-        try:
-            guessed = _infer_user_state(persona_id)
-            warmth.set_user_state(persona_id, guessed)
-            _log(f"warmth user_state → {guessed}")
-        except Exception as exc:
-            # 推断失败**不能**把过期的 sleeping/busy 留在那里抬门槛（复核指出）：
-            # 记录里承诺的"失败一律当作 active"必须在这条异常路径上真的发生。
-            _log(f"warmth user_state failed: {exc} → active")
+        # 先问确定性信号（免费、不会瞎猜），问不出来才花一次模型调用
+        guess = _presence(persona_id)
+        if guess is None:
             try:
-                warmth.set_user_state(persona_id, "active")
-            except Exception:
-                pass
+                guess = _infer_user_state(persona_id)
+                _log(f"warmth user_state → {guess}（模型）")
+            except Exception as exc:
+                # 推断失败**不能**把过期的 sleeping/busy 留在那里抬门槛（复核指出）
+                _log(f"warmth user_state failed: {exc} → active")
+                guess = "active"
+        else:
+            _log(f"warmth user_state → {guess}（在场判断）")
+        try:
+            warmth.set_user_state(persona_id, guess)
+        except Exception:
+            pass
     try:
         result = warmth.ambient_tick(
             persona_id,

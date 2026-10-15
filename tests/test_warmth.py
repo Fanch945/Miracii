@@ -1059,19 +1059,22 @@ class UserStateTests(unittest.TestCase):
         self.assertEqual(warmth.backlog_count(None), 0)  # 还没有队列文件
         queue = self.root / "memory" / "learn_queue"
         queue.mkdir(parents=True)
-        (queue / "pending.jsonl").write_text('{"claim": "a"}\n\n{"claim": "b"}\n', encoding="utf-8")
+        path = queue / "pending.jsonl"
+        path.write_text('{"claim": "a"}\n\n{"claim": "b"}\n', encoding="utf-8")
         self.assertEqual(warmth.backlog_count(None), 2)
 
     def test_a_dormant_backlog_does_not_count_as_being_busy(self):
-        """积压是状态，不是活动：放了很久的待办不该让她永远"埋头"。"""
+        """积压是状态，不是活动：放了很久的待办不该让她永远"埋头"。
+
+        注意：文件时间要**相对假 now** 来设，不能拿真实时间减——否则每到新的一天这条就会假失败。
+        """
         queue = self.root / "memory" / "learn_queue"
         queue.mkdir(parents=True)
         path = queue / "pending.jsonl"
         path.write_text('{"claim": "a"}\n', encoding="utf-8")
-        stale = os.stat(path)
         old = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
-        # 把文件时间拨到十小时前
-        os.utime(path, (stale.st_atime - 36000, stale.st_mtime - 36000))
+        ten_hours_ago = (old - timedelta(hours=10)).timestamp()
+        os.utime(path, (ten_hours_ago, ten_hours_ago))
         self.assertEqual(warmth.backlog_count(None, fresh_within_minutes=120, now=old), 0)
         self.assertEqual(warmth.backlog_count(None), 1)  # 不传窗口就只看条数
 
@@ -1212,8 +1215,9 @@ class ReviewFixTests(unittest.TestCase):
         queue.mkdir(parents=True)
         path = queue / "pending.jsonl"
         path.write_text('{"claim": "a"}\n', encoding="utf-8")
-        stat = os.stat(path)
-        os.utime(path, (stat.st_atime - 36000, stat.st_mtime - 36000))
+        # 相对假 now 拨时间（拿真实时间减会在跨天后假失败）
+        ten_hours_ago = (self.start - timedelta(hours=10)).timestamp()
+        os.utime(path, (ten_hours_ago, ten_hours_ago))
         data = warmth.view("x", now=self.start)
         self.assertEqual(data["backlog"], 0)  # 引擎用的：新鲜的
         self.assertEqual(data["backlog_total"], 1)  # 给人看的：总数
@@ -1249,6 +1253,83 @@ class ReviewFixTests(unittest.TestCase):
         ), mock.patch.object(heartbeat, "_log"):
             heartbeat.run_warmth_tick("test")
         setter.assert_called_once_with("test", "active")
+
+
+class PresenceTests(unittest.TestCase):
+    """确定性判断"他在不在"——人报过：她先开口，然后才可能知道对方在不在。
+
+    以前完全没有暂离判断；现在先问免费的在场信号，问不出来才花模型调用。
+    """
+
+    def setUp(self):
+        from app import heartbeat
+
+        self.heartbeat = heartbeat
+        self.root = Path(tempfile.mkdtemp(prefix="warmth-presence-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        patcher = mock.patch.object(heartbeat.files, "TRANSCRIPT_DIR", self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        schedule = mock.patch.object(heartbeat.supervisor, "parse_schedule", return_value={"stm_minutes": 5})
+        schedule.start()
+        self.addCleanup(schedule.stop)
+
+    def turns(self, *rows: tuple[str, float]) -> None:
+        path = self.root / "x" / "2026-10-15.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc)
+        lines = [
+            json.dumps({"role": role, "created_at": (stamp - timedelta(minutes=ago)).isoformat(), "content": "x"})
+            for role, ago in rows
+        ]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_a_fresh_turn_from_him_means_he_is_there(self):
+        self.turns(("assistant", 30), ("user", 2))
+        self.assertEqual(self.heartbeat._presence("x"), "active")
+
+    def test_silence_after_her_turn_means_he_walked_away(self):
+        self.turns(("user", 40), ("assistant", 20))
+        self.assertEqual(self.heartbeat._presence("x"), "away")
+
+    def test_a_brief_gap_is_left_to_the_model(self):
+        self.turns(("user", 40), ("assistant", 5))
+        self.assertIsNone(self.heartbeat._presence("x"))
+
+    def test_no_transcript_at_all_is_left_to_the_model(self):
+        self.assertIsNone(self.heartbeat._presence("x"))
+
+    def test_the_last_turn_reports_who_and_how_long(self):
+        self.turns(("user", 30), ("assistant", 12))
+        role, gap = self.heartbeat._last_turn("x")
+        self.assertEqual(role, "assistant")
+        self.assertAlmostEqual(gap, 12.0, delta=0.5)
+
+    def test_the_presence_signal_is_asked_before_the_model(self):
+        heartbeat = self.heartbeat
+        with mock.patch.object(heartbeat.warmth, "needs_user_state", return_value=True), mock.patch.object(
+            heartbeat, "_presence", return_value="away"
+        ), mock.patch.object(heartbeat, "_infer_user_state") as model, mock.patch.object(
+            heartbeat.warmth, "set_user_state"
+        ) as setter, mock.patch.object(
+            heartbeat.warmth, "ambient_tick", return_value={"elapsed": 0.0, "fired": []}
+        ), mock.patch.object(heartbeat, "_log"):
+            heartbeat.run_warmth_tick("x")
+        model.assert_not_called()  # 免费的信号先问
+        setter.assert_called_once_with("x", "away")
+
+    def test_the_model_is_used_when_presence_cannot_tell(self):
+        heartbeat = self.heartbeat
+        with mock.patch.object(heartbeat.warmth, "needs_user_state", return_value=True), mock.patch.object(
+            heartbeat, "_presence", return_value=None
+        ), mock.patch.object(heartbeat, "_infer_user_state", return_value="busy") as model, mock.patch.object(
+            heartbeat.warmth, "set_user_state"
+        ) as setter, mock.patch.object(
+            heartbeat.warmth, "ambient_tick", return_value={"elapsed": 0.0, "fired": []}
+        ), mock.patch.object(heartbeat, "_log"):
+            heartbeat.run_warmth_tick("x")
+        model.assert_called_once()
+        setter.assert_called_once_with("x", "busy")
 
 
 if __name__ == "__main__":

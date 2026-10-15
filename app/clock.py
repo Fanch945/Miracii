@@ -231,17 +231,18 @@ def due_phase(persona_id: str) -> str | None:
     stm_min = int(sched.get("stm_minutes") or 5)
     live = bool(last_chat and (now - last_chat).total_seconds() < stm_min * 60)
 
-    # 当前这轮还在聊：不要把新话搅进落下的 stm/routine。日周读 impression，可以补做。
+    # 当前这轮还在聊：不要把新话搅进落下的 stm/routine，**日周也一样要等这轮结束**。
+    # 23:00 的 daily 会在短期窗口一关就补上（missed_daily 本来就处理跨夜），
+    # 但抢在 STM 之前落库，等于把还没沉淀的对话直接折进长期记忆——人实测到过。
     if not live:
         if stm_due and now >= stm_due and not stm_done:
             return "stm"
         if stm_done and not state.get("routine_done") and routine_due and now >= routine_due:
             return "routine"
-
-    if missed_daily(now, state.get("last_daily")):
-        return "daily"
-    if missed_weekly(now, state.get("last_weekly")):
-        return "weekly"
+        if missed_daily(now, state.get("last_daily")):
+            return "daily"
+        if missed_weekly(now, state.get("last_weekly")):
+            return "weekly"
     return None
 
 
