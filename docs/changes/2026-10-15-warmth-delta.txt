@@ -63,3 +63,41 @@
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-16）
+
+解析、逐轴夹紧（pride / connection）、台账门槛、认识的 source、开机补偿的回报数字，和 `DeltaTests`（9 项）、`WakeBonusTests`（3 项）一致。关机 5 小时那一拍 `applied` 120、`wake_bonus` 60，connection 走到 0.084，与 `0.0007 * 120` 一致，状态确实被推进了。`template` / `known` / `load_config` / `effective_config` 都有 `wake_bonus_minutes`。`review()` 会数「明显的情绪注入」。全库 `Ran 228 tests in 1.078s，OK (skipped=1)`。
+
+四条对不上：
+
+1. `app/warmth.py` 716 行 `hesitation` 的下限是 `-0.5`。记录写的上限是 ±0.3，connection 单独 `-0.5~+0.3`。`docs/WARMTH.txt` 164 行写「其余 ±0.3」。`app/heartbeat.py` 356 行的提示词也是 -0.3 到 0.3，只有 connection 可以到 -0.5。临时状态 `hesitation=0.8`，注入 `-0.9`，夹成 `-0.5`，轴落到 0.30。按记录应夹成 `-0.3`，轴落到 0.50。
+
+2. 记录写「§1.1 补开机补偿」。`docs/WARMTH.txt` 13–20 行的 §1.1 没有这一项。§1.6 在 154 行，排在 §2.4（142 行）和 §2.5（173 行）之间。322 行的台账种类仍是 `tick` / `speak` / `mark`，没有 `delta`。
+
+3. `docs/WARMTH-NOTES.txt` 6–16 行的更新块写了已拍板（默认 60、砍掉 resolve、注入已接）。34–41 行仍写「都还没做」，方案 A 的默认值是 0。68 行仍把「拆不拆成 hesitation + resolve」写成未决。77–78 行仍写 `apply_delta` 没有任何调用方。调用在 `app/warmth.py` 551、703、787 行。
+
+4. 不认识的 `source`：台账在 796 行降成 `chat`，返回值在 802 行仍是原字符串。`source="nope"` 时返回 `nope`，台账是 `chat`。
+
+状态文件没有锁。`save_state`（`app/warmth.py` 525–529 行）整份覆盖。`app/main.py` 150–154 行的后台线程和 `ambient_tick` 都是先读后写。先注入 `pride +0.3`，再用注入前读到的那份状态做一次 tick 并保存，pride 回到 0.0。
+
+最该先修：`app/warmth.py` 716 行。`hesitation` 下限改为 `-0.3`。
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+```
+
+临时目录（已删，未碰 `persona/`）：hesitation `-0.9` → applied `-0.5`、轴 `0.30`；5 小时空档 connection `0.084`；陈旧的 tick 把 pride `0.3` 盖成 `0.0`。未改 `app/`、`tests/`、`persona/`。
+
+### 回应（DSH / 2026-10-16）
+
+| 复核意见 | 处理 |
+|---|---|
+| `hesitation` 的注入下限是 −0.5，而记录、`WARMTH.txt` 与判断提示词都写"其余轴 ±0.3，只有 connection 可到 −0.5" | **采纳，已修**。按规范收紧成 `(−0.3, 0.3)`：`hesitation 0.8` 注入 `−0.9` 现在落到 **0.50**（原为 0.30）。守卫：`test_hesitation_cannot_be_driven_below_the_documented_floor`、`test_only_connection_may_go_to_negative_half` |
+| 返回值里的 `source` 没归一化（台账写 `chat`、调用方拿原字符串） | **采纳，已修**：归一化只做一次，两处共用。守卫：`test_the_returned_source_matches_what_was_written` |
+| **状态文件没有锁，后写的 tick 会盖掉刚注入的 `pride`** | **采纳——而且我第一版没修对**。第一版只在 `save_state` 前加锁，**`load_state` 仍在锁外**：心跳照样拿着旧快照整份写回。新写的并发测试（6 次注入 × 6 次 tick 交错）当场抓住 `pride == 0`。改成函数级 `@_locked` 包住整段读改写后才通过。守卫：`test_an_injection_is_not_lost_when_a_tick_writes_at_the_same_time` |
+| `WARMTH.txt` 的 §1.6 跑到第 2 章、§1.1 缺开机补偿、台账种类表缺 `delta` | **采纳，已修**：§1.6 挪回第 1 章、台账表补 `delta` |
+| 成功项：60 分钟补偿算得对（关机 5 小时 → `0.0007 × 120 = 0.084`）、夹紧与台账门槛与记录一致 | 无异议 |
+
+修后全库：`Ran 234 tests ... OK (skipped=1)`。
+
+**跨进程仍未覆盖**：`_STATE_LOCK` 是进程内的；单独跑 `python -m app.heartbeat` 时它和网页进程仍可能互相覆盖。已记进未决项。

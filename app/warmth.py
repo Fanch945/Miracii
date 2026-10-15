@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import threading
@@ -40,6 +41,21 @@ MAX_TICK_MINUTES = 60.0
 # 会同时读写同一份 `warmth-state.json`。没有这把锁，后写的 tick 会盖掉刚注入的那一笔（复核实测到）。
 # 进程内的写者共用它；跨进程（单独跑 `python -m app.heartbeat`）仍不覆盖——见改动账的未决项。
 _STATE_LOCK = threading.RLock()
+
+
+def _locked(fn):
+    """让"读—改—写"整段互斥。
+
+    **锁必须包住 load，不只是 save**：只在写的时候加锁，心跳仍会拿着锁外读到的旧快照整份写回，
+    把刚注入的那一笔抹掉——第一版就是这么错的，被测试当场抓住。
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _STATE_LOCK:
+            return fn(*args, **kwargs)
+
+    return wrapper
 # 参照实现里写死的两个 immersion 边界（jiwen.js:462-467、507-516）
 BUFFER_IMMERSION = 0.2  # 骄傲挡住开口时，沉浸低于此值才转而找事做
 REGULATE_IMMERSION = 0.3  # 自我调节也要求没那么沉浸
@@ -833,6 +849,7 @@ def seconds_until_due(persona_id: str | None = None, *, now: datetime | None = N
     return max(0.0, tick_minutes(persona_id) * 60.0 - elapsed)
 
 
+@_locked
 def ambient_tick(
     persona_id: str | None = None,
     *,

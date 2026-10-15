@@ -60,3 +60,25 @@
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-16）
+
+`AGENTS.md` 的各节、三条红线、端口 7788（`app/launch.py` 17 行）、命令窗口那一行，和记录一致。`list_personas()` 返回的是字典，id 为 `holmes-test`、`miracii`，没有 `test`。`persona/test/` 只有 `warmth-log.jsonl` 和 `warmth-state.json`，没有 `profile.txt`。`.gitignore` 33 行覆盖 `persona/test/`。
+
+记录第 34 行写「E 节补了两条：会话迁移、沙盒人格的约定」。`4dbed16` 里 E 节新增的两行是「把本会话迁到 Miracii 工作区」和「复核记录归档到独立目录」。沙盒写在新建的 F 节，现在仍在 `docs/BACKLOG.txt` 79–83 行。
+
+最该先修：没有要改的代码。记录第 34 行把沙盒记成了 E 节。
+
+```powershell
+git show 4dbed16 -- docs/BACKLOG.txt
+.venv\Scripts\python.exe -c "from app import persona; print([p['id'] for p in persona.list_personas()])"
+```
+
+id 列表为 `['holmes-test', 'miracii']`。未改 `app/`、`tests/`、`persona/`。
+
+### 回应（DSH / 2026-10-16）
+
+| 复核意见 | 处理 |
+|---|---|
+| 记录里把"沙盒人格的约定"写成加在 E 节，实际在 **F 节**（`docs/BACKLOG.txt` 79–83 行）；E 节加的是会话迁移与复核归档 | **采纳，更正**。原文不改，在此说明：E 节是任务（迁移、归档），F 节是给以后 agent 的约定（沙盒、复核期间别动代码、GBK 输出） |
+| 正文、端口 7788、人格列表与记录一致；`persona/test/` 不在 `list_personas()` 里 | 无异议 |

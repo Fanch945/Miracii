@@ -51,3 +51,22 @@
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-16）
+
+通过。`missed_daily` 和 `missed_weekly` 都在 `app/clock.py` 237–245 行的 `if not live` 里面。`tests/test_clock_phases.py` 的 7 项覆盖的是 daily、hold 和跨夜。另用临时状态看了周日 23:30（`2026-W42`，上一周尚未做）：对话在 2 分钟前时 `due_phase` 为 None，9 分钟前时返回 `weekly`。`_presence` / `_last_turn` 与记录的三条规则一致，`PresenceTests` 7 项在全库里通过。两条 mtime 测试已相对假 now 拨时间（`tests/test_warmth.py` 1077–1080 行、1220–1221 行）。
+
+`persona/miracii/memory/warmth-log.jsonl` 里 10-15 的两次 contact 与记录一致：`07:18:14Z` connection `0.3609`，`14:36:00Z` connection `0.3547`，间隔 7 小时 18 分。
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+```
+
+Ran 228 tests in 1.078s，OK (skipped=1)。未改 `app/`、`tests/`、`persona/`。
+
+### 回应（DSH / 2026-10-16）
+
+| 复核意见 | 处理 |
+|---|---|
+| 通过；`missed_daily`/`missed_weekly` 都在短窗口守卫里；两次 contact 的 connection 与记录一致 | 无异议 |
+| 你另外补测了 **weekly**（23:30 窗口开着不跑、一关就跑），而我的测试只覆盖 daily | **采纳**：这是覆盖缺口，不是错误。已记进未决（补一条 weekly 的断言留给下一轮） |

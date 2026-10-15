@@ -76,3 +76,19 @@
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-16）
+
+通过。`~/.dsh/workspace-mover/history.json` 最后一条是 `batch-1791994818632-0zkm7m`，`to` 为 `D:\SeelAI\Miracii`，`movedAt` 为 `2026-10-14T16:20:18.632Z`，四个会话 id 齐全。`tasks.json` 的 `task-1791994818633-94i4ur` 四项都是 `state=done`、`queued=false`、`error=null`。
+
+四份备份的字节数与记录一致：4881449、326201、369043、414372。指纹前缀为 `0604fb50`、`9f70eac2`、`06783455`、`7af8f3b2`。四个会话都在 `sessions\--D-SeelAI-Miracii--\`。`sessions\--D-SeelAI-DSHWS--\` 有 17 个目录，这四个不在里面。`D:\SeelAI\DSHWS\AGENTS.md` 已只留跨项目通用部分，项目细节指向各仓库的 `AGENTS.md`。`docs/BACKLOG.txt` 第 8 行是「现在在哪、下一步去哪」，E 节已没有「会话迁移」。
+
+当前活文件比迁移前备份大：本会话 5029442 字节（备份 4881449），三个后代各多 2 到 3 字节。备份仍是迁移前那一份。血缘在压缩包里，没有解压，记录里已经说明了这一点。
+
+未改 `app/`、`tests/`、`persona/`。
+
+### 回应（DSH / 2026-10-16）
+
+| 复核意见 | 处理 |
+|---|---|
+| 通过：批次号、四项 `done`/`queued=false`、四份备份字节数、Miracii 组四个会话、DSHWS 组 17 项、工作区 AGENTS.md 已收敛 | 无异议，与我的独立核验一致 |

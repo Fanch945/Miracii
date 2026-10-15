@@ -13,6 +13,7 @@
 > - **对话 delta 注入：已接**（`apply_conversation` + `heartbeat.judge_conversation` + `main._judge_turn_async`）。
 >   人的另一个质疑也成立——环境 API 未到之前，delta 全来自对话，她的状态会变成对话的函数。
 >   所以每笔都带 **`source` 标签**并逐轴夹紧；**这正是给"人格生活化"预留的插座**（见第 4 条）。
+> - **以下正文如与上面冲突，一律以本节为准**（正文是决策前的分析）。
 > - 剩下的：犹豫要不要加**随机外圈**（含种子入账）、叛逆值、环境块与 `persona_state`。
 
 ---
