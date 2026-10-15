@@ -551,6 +551,7 @@ def save_state(persona_id: str | None, state: State, *, path: Path | None = None
     return target
 
 
+@_locked
 def note_spoke(persona_id: str | None = None, *, now: datetime | None = None, path: Path | None = None) -> State:
     """记下"她刚开口了"——冷却靠它。"""
     stamp = now or _now()
@@ -560,6 +561,7 @@ def note_spoke(persona_id: str | None = None, *, now: datetime | None = None, pa
     return state
 
 
+@_locked
 def on_user_message(persona_id: str | None = None, *, path: Path | None = None) -> dict:
     """对方回话了：等待由"你出现了"解除。
 
@@ -574,6 +576,7 @@ def on_user_message(persona_id: str | None = None, *, path: Path | None = None) 
     return engine.snapshot()
 
 
+@_locked
 def set_user_state(
     persona_id: str | None = None, value: str = "active", *, now: datetime | None = None, path: Path | None = None
 ) -> State:
@@ -712,6 +715,7 @@ def watch_line(persona_id: str | None = None, *, now: datetime | None = None) ->
     return f"{data['at'][11:19]}  " + "  ".join(parts) + f"  | {tail}"
 
 
+@_locked
 def undo_user_message(persona_id: str | None = None, *, path: Path | None = None) -> dict:
     """撤回一次"你出现了"：把 `reply_delta` 反向加回去。
 
