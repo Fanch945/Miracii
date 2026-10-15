@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -35,6 +36,10 @@ AXIS_RANGES: dict[str, tuple[float, float]] = {
 }
 
 MAX_TICK_MINUTES = 60.0
+# 状态文件是"读—改—写"，而写它的不止一处：心跳的空闲 tick 与对话判线程（`main._judge_turn_async`）
+# 会同时读写同一份 `warmth-state.json`。没有这把锁，后写的 tick 会盖掉刚注入的那一笔（复核实测到）。
+# 进程内的写者共用它；跨进程（单独跑 `python -m app.heartbeat`）仍不覆盖——见改动账的未决项。
+_STATE_LOCK = threading.RLock()
 # 参照实现里写死的两个 immersion 边界（jiwen.js:462-467、507-516）
 BUFFER_IMMERSION = 0.2  # 骄傲挡住开口时，沉浸低于此值才转而找事做
 REGULATE_IMMERSION = 0.3  # 自我调节也要求没那么沉浸
@@ -713,7 +718,7 @@ CONVERSATION_CAPS: dict[str, tuple[float, float]] = {
     "valence": (-0.3, 0.3),
     "arousal": (-0.3, 0.3),
     "immersion": (-0.3, 0.3),
-    "hesitation": (-0.5, 0.3),
+    "hesitation": (-0.3, 0.3),
 }
 # `source` 不是装饰：将来环境/灵感事件接进来之后，要靠它分清
 # "她的状态里有多少是自己长出来的、多少是被这一轮对话带动的"（见 docs/WARMTH-NOTES.txt）。
@@ -780,12 +785,14 @@ def apply_conversation(
             cleaned[name] = round(clamped, 4)
     if not cleaned:
         return {"applied": {}, "source": source, "changed": False}
+    tag = source if source in CONVERSATION_SOURCES else "chat"
 
-    config, _ = load_config(persona_id)
-    state, _ = load_state(persona_id, path=path)
-    engine = Engine(config, state)
-    engine.apply_delta(**cleaned)
-    save_state(persona_id, engine.state, path=path)
+    with _STATE_LOCK:
+        config, _ = load_config(persona_id)
+        state, _ = load_state(persona_id, path=path)
+        engine = Engine(config, state)
+        engine.apply_delta(**cleaned)
+        save_state(persona_id, engine.state, path=path)
 
     if max(abs(value) for value in cleaned.values()) >= DELTA_LOG_THRESHOLD:
         append_log(
@@ -793,14 +800,15 @@ def apply_conversation(
             {
                 "kind": "delta",
                 "at": stamp.isoformat(timespec="seconds"),
-                "source": source if source in CONVERSATION_SOURCES else "chat",
+                "source": tag,
                 "note": str(note or "")[:200],
                 "applied": cleaned,
                 **state_to_dict(engine.state),
             },
             path=log,
         )
-    return {"applied": cleaned, "source": source, "changed": True, "snapshot": engine.snapshot()}
+    # 返回值里的 source 也要是**归一化之后**的——否则台账写 `chat`、调用方拿到原字符串（复核指出）
+    return {"applied": cleaned, "source": tag, "changed": True, "snapshot": engine.snapshot()}
 
 
 def tick_minutes(persona_id: str | None = None) -> float:
@@ -851,17 +859,18 @@ def ambient_tick(
     if elapsed <= 0:
         return {"elapsed": 0.0, "first": False, "fired": [], "notes": notes, "snapshot": Engine(resolved, state).snapshot()}
 
-    engine = Engine(resolved, state)
-    if backlog is not None:
-        # 她手上有没有事，决定了连接需求涨得快不快（每拍重申一次，积压还在她就一直在忙）。
-        # `at=stamp` 不能省：活动时钟必须和这一拍的时钟一致，否则衰减会按两个时钟算。
-        engine.set_activity(activity_for_backlog(backlog), at=stamp)
-    # 空档超过单拍上限 = 应用刚被重新打开 → 给一次开机补偿（`wake_bonus_minutes`）
-    gap_was_clamped = elapsed > resolved.max_tick_minutes
-    bonus = resolved.wake_bonus_minutes if gap_was_clamped else 0.0
-    fired = engine.tick(
-        elapsed, now=stamp, minutes_since_message=minutes_since_message, catch_up_minutes=bonus
-    )
+    with _STATE_LOCK:
+        engine = Engine(resolved, state)
+        if backlog is not None:
+            # 她手上有没有事，决定了连接需求涨得快不快（每拍重申一次，积压还在她就一直在忙）。
+            # `at=stamp` 不能省：活动时钟必须和这一拍的时钟一致，否则衰减会按两个时钟算。
+            engine.set_activity(activity_for_backlog(backlog), at=stamp)
+        # 空档超过单拍上限 = 应用刚被重新打开 → 给一次开机补偿（`wake_bonus_minutes`）
+        gap_was_clamped = elapsed > resolved.max_tick_minutes
+        bonus = resolved.wake_bonus_minutes if gap_was_clamped else 0.0
+        fired = engine.tick(
+            elapsed, now=stamp, minutes_since_message=minutes_since_message, catch_up_minutes=bonus
+        )
     gates_now = gate_set(engine, fired)
     loggable = gates_now != sorted(engine.state.last_gates or [])
     engine.state.last_gates = gates_now
