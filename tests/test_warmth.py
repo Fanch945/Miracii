@@ -1254,7 +1254,7 @@ class ReviewFixTests(unittest.TestCase):
             heartbeat.warmth, "ambient_tick", return_value={"elapsed": 0.0, "fired": []}
         ), mock.patch.object(heartbeat, "_log"):
             heartbeat.run_warmth_tick("test")
-        setter.assert_called_once_with("test", "active")
+        setter.assert_called_once_with("test", "active", source="model", note="推断失败回退")
 
 
 class PresenceTests(unittest.TestCase):
@@ -1318,7 +1318,7 @@ class PresenceTests(unittest.TestCase):
         ), mock.patch.object(heartbeat, "_log"):
             heartbeat.run_warmth_tick("x")
         model.assert_not_called()  # 免费的信号先问
-        setter.assert_called_once_with("x", "away")
+        setter.assert_called_once_with("x", "away", source="presence", note="")
 
     def test_the_model_is_used_when_presence_cannot_tell(self):
         heartbeat = self.heartbeat
@@ -1331,7 +1331,7 @@ class PresenceTests(unittest.TestCase):
         ), mock.patch.object(heartbeat, "_log"):
             heartbeat.run_warmth_tick("x")
         model.assert_called_once()
-        setter.assert_called_once_with("x", "busy")
+        setter.assert_called_once_with("x", "busy", source="model", note="模型判断")
 
 
 class DeltaTests(unittest.TestCase):

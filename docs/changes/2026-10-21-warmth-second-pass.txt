@@ -1,0 +1,56 @@
+# 第二轮优化：愉悦度静止点、沉浸度被抢写、user_state 可追溯
+
+- 日期：2026-10-21
+- 作者：DSH（DeepSeek Harness agent）
+- 关联提交：本文件所在提交
+- 关联设计文档：[docs/WARMTH.txt](../WARMTH.txt)、[docs/WARMTH-NOTES.txt](../WARMTH-NOTES.txt)
+
+## 背景
+
+人用了 7 天后提三条，都先查了台账再动手：
+
+1. **愉悦度降太快，负值成了常态**，"不确定是什么程度的不开心"。
+2. **user_state 的历史与原因查不到**；怀疑存在过期值或"她自己觉得你在忙"。
+3. **两天前晚上的高沉浸度是怎么来的**；今天下午她说"在思考一个模型"，两者一致吗。
+
+## 查到的根因（台账 + 代码）
+
+| 现象 | 根因 |
+|---|---|
+| valence 常为负 | 早先"先回归到 0、**再**下沉一整拍"，静止点恰好等于**一拍的下沉量**；只要 c > 0.42 就永远是负的。台账里每一次 `contact` 都伴随 v ≈ −0.09 ~ −0.62 |
+| user_state 不可追溯 | **台账里根本没有这类记录**（52 行只有 tick 27 / delta 19 / speak 6）。当前 `away` 是 07:54Z 写的，此后 3.5 小时无人更新 |
+| 高沉浸消失 | **沉浸度被两个写者抢写**：对话判线程注入 `immersion +0.15~0.2`（台账里 0.05→0.45、0.10→0.85 都是它抬的），而下一拍 `ambient_tick` 在积压为 0 时调 `set_activity(None)` **强制归零**——所以**所有 tick 行的 i 都是 0.00，delta 行在涨**。supervisor 没有给她日程，学习队列也已 46.8 小时没动 |
+
+## 改了什么
+
+| 位置 | 改动 |
+|---|---|
+| `_drift_valence` | 两个力**合成净速率**再走一步：`net = regress − drift`。静止点由平衡点决定（0.005 / 0.012 ≈ c 0.42），不再恒为负 |
+| `ambient_tick` | 积压为 0 时**不再动** immersion（它可能是对话抬起来的），交给自然衰减 |
+| `apply_conversation` | 注入 `immersion` 时记下 `last_activity_at`，让它按 `immersion_decay` 退去而不是永远停在那儿 |
+| `set_user_state` | 值变化时写一行 `kind=state`（含 `source`: presence/model 与 `note`），从此可追溯 |
+| `heartbeat.run_warmth_tick` | 把来源（在场判断 / 模型）与说明传给 `set_user_state` |
+| `valence_band()` | 把 −1~+1 翻成话：挺开心 / 还不错 / 平静 / 有点闷 / 明显低落 / 很低落；`--view` 里带 `valence_band`，内心话也分档 |
+| **哨兵 bug** | `valence_lock_threshold` / `arousal_lock_threshold` 注释写"1.0 = 永不"，判断却是 `>=`——connection 真到 1.0 时锁**会**生效（回归被乘 0.15）。改成 `< 1.0 且 >` 才触发，1.0 真正等于关闭 |
+
+## 验证
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+# Ran 244 tests ... OK (skipped=1)      ← 上一轮 234
+```
+
+新增 `tests/test_warmth_second_pass.py`（10 项）：低连接下 valence 回到 0（不再是负值常态）、高连接仍下沉但按净速率、
+一句话能抬起心情、档位可读；积压为 0 的 tick 不清零注入的沉浸、注入的沉浸会自然衰减、真积压仍占注意力；
+user_state 变更入账带来源、同值不重复、非法值不动。
+
+## 风险与未决
+
+- **valence 的新静态平衡点是我按数学推的**（c≈0.42），没有真人标注验证；`valence_connection_drift_rate` 是否该从 0.012 再降，等数据。
+- **user_state 仍可能过期**：TTL 180 分钟，且只在"连接逼近开口线"时才刷新。人问的"她觉得你在忙"确实可能来自模型对**旧对话**的判断，现在至少能查到来龙去脉。
+- 沉浸度的两个来源（对话注入 vs 真实积压）现在**共存**而不是互相覆盖，但没有任何东西记录"这次是哪个来源抬的"——`delta` 行能看到，tick 行看不到。
+- 哨兵修复只动了这两处；`pride_defend_threshold` / `hesitation_source_floor` 等的边界语义没变。
+
+## 复核
+
+（留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）

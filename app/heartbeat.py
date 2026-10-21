@@ -379,18 +379,20 @@ def run_warmth_tick(persona_id: str) -> dict:
     if warmth.needs_user_state(persona_id):
         # 先问确定性信号（免费、不会瞎猜），问不出来才花一次模型调用
         guess = _presence(persona_id)
+        source, note = "presence", ""
         if guess is None:
             try:
                 guess = _infer_user_state(persona_id)
+                source, note = "model", "模型判断"
                 _log(f"warmth user_state → {guess}（模型）")
             except Exception as exc:
                 # 推断失败**不能**把过期的 sleeping/busy 留在那里抬门槛（复核指出）
                 _log(f"warmth user_state failed: {exc} → active")
-                guess = "active"
+                guess, source, note = "active", "model", "推断失败回退"
         else:
             _log(f"warmth user_state → {guess}（在场判断）")
         try:
-            warmth.set_user_state(persona_id, guess)
+            warmth.set_user_state(persona_id, guess, source=source, note=note)
         except Exception:
             pass
     try:

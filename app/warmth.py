@@ -61,6 +61,24 @@ BUFFER_IMMERSION = 0.2  # 骄傲挡住开口时，沉浸低于此值才转而找
 REGULATE_IMMERSION = 0.3  # 自我调节也要求没那么沉浸
 
 
+VALENCE_BANDS: tuple[tuple[float, str], ...] = (
+    (0.40, "挺开心"),
+    (0.15, "还不错"),
+    (-0.15, "平静"),
+    (-0.40, "有点闷"),
+    (-0.70, "明显低落"),
+    (-9.0, "很低落"),
+)
+
+
+def valence_band(value: float) -> str:
+    """把 −1~+1 翻成人话——数字本身说明不了"到什么程度"（人反馈过这个问题）。"""
+    for floor, label in VALENCE_BANDS:
+        if value >= floor:
+            return label
+    return "很低落"
+
+
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
@@ -578,14 +596,40 @@ def on_user_message(persona_id: str | None = None, *, path: Path | None = None) 
 
 @_locked
 def set_user_state(
-    persona_id: str | None = None, value: str = "active", *, now: datetime | None = None, path: Path | None = None
+    persona_id: str | None = None,
+    value: str = "active",
+    *,
+    source: str = "presence",
+    note: str = "",
+    now: datetime | None = None,
+    path: Path | None = None,
+    log: Path | None = None,
 ) -> State:
-    """记下"他此刻大概是什么状态"。由轻量模型推断（见 heartbeat._infer_user_state），不是猜的。"""
+    """记下"他此刻大概是什么状态"，**并且把变更写进台账**。
+
+    人报过：历史里查不到 user_state 是什么时候、因为什么变的。来源只有两种：
+    `presence`（确定性在场信号：他刚说话 / 她说完没人应）与 `model`（轻量模型从对话判）。
+    """
     state, _ = load_state(persona_id, path=path)
-    if value in Config().user_state_lift:
-        state.user_state = value
-        state.user_state_at = now or _now()
-        save_state(persona_id, state, path=path)
+    if value not in Config().user_state_lift:
+        return state
+    changed = state.user_state != value
+    stamp = now or _now()
+    state.user_state = value
+    state.user_state_at = stamp
+    save_state(persona_id, state, path=path)
+    if changed:
+        append_log(
+            persona_id,
+            {
+                "kind": "state",
+                "at": stamp.isoformat(timespec="seconds"),
+                "user_state": value,
+                "source": source if source in ("presence", "model") else "presence",
+                "note": str(note or "")[:120],
+            },
+            path=log,
+        )
     return state
 
 
@@ -676,6 +720,7 @@ def view(persona_id: str | None = None, *, now: datetime | None = None) -> dict:
         "gates": engine.check(now=stamp),
         "explain": engine.explain(),
         "words": engine.prompt_context(),
+        "valence_band": valence_band(state.valence),
         "style": engine.style_guidance(),
         "user_state": state.user_state,
         "user_state_at": state.user_state_at.isoformat(timespec="seconds") if state.user_state_at else None,
@@ -812,6 +857,9 @@ def apply_conversation(
         state, _ = load_state(persona_id, path=path)
         engine = Engine(config, state)
         engine.apply_delta(**cleaned)
+        if "immersion" in cleaned:
+            # 没有"活动时钟"的 immersion 永远不会衰减——注入时顺手记下，交给正常衰减
+            engine.state.last_activity_at = stamp
         save_state(persona_id, engine.state, path=path)
 
     if max(abs(value) for value in cleaned.values()) >= DELTA_LOG_THRESHOLD:
@@ -882,10 +930,13 @@ def ambient_tick(
 
     with _STATE_LOCK:
         engine = Engine(resolved, state)
-        if backlog is not None:
+        activity = activity_for_backlog(backlog) if backlog is not None else None
+        if activity:
             # 她手上有没有事，决定了连接需求涨得快不快（每拍重申一次，积压还在她就一直在忙）。
             # `at=stamp` 不能省：活动时钟必须和这一拍的时钟一致，否则衰减会按两个时钟算。
-            engine.set_activity(activity_for_backlog(backlog), at=stamp)
+            engine.set_activity(activity, at=stamp)
+        # 没有积压时**不动** immersion：它可能是对话注入抬起来的，交给自然衰减。
+        # 早先这里无条件 set_activity(None)，把每一次对话抬起的沉浸度当场清零（人报的"高沉浸"就是这么消失的）。
         # 空档超过单拍上限 = 应用刚被重新打开 → 给一次开机补偿（`wake_bonus_minutes`）
         gap_was_clamped = elapsed > resolved.max_tick_minutes
         bonus = resolved.wake_bonus_minutes if gap_was_clamped else 0.0
@@ -1380,19 +1431,26 @@ class Engine:
         state = self.state
         low, high = AXIS_RANGES["valence"]
         regress = rates.valence_regress
-        if state.connection >= rates.valence_lock_threshold:
+        if rates.valence_lock_threshold < 1.0 and state.connection > rates.valence_lock_threshold:
             regress *= rates.valence_lock_factor
-        state.valence = _approach(state.valence, clamp(rates.valence_setpoint, low, high), regress * mins)
+        # 两个力**合成一个净速率**再走一步。早先是"先回归到 0、再下沉一整拍"，
+        # 于是静止点恰好等于一拍的下沉量——只要 c > 0.42 就永远是负的（人反馈"愉悦度降太快"）。
+        drift = 0.0
         if rates.valence_connection_drift_rate > 0 and state.connection >= rates.valence_connection_drift_threshold:
-            drift = rates.valence_connection_drift_rate * mins * state.connection
-            state.valence = clamp(state.valence - drift, low, high)
+            drift = rates.valence_connection_drift_rate * state.connection
+        net = regress - drift
+        target = clamp(rates.valence_setpoint, low, high)
+        if net >= 0:
+            state.valence = _approach(state.valence, target, net * mins)
+        else:
+            state.valence = clamp(state.valence + net * mins, low, high)
 
     def _drift_arousal(self, mins: float, rates: Rates) -> None:
         state = self.state
         low, high = AXIS_RANGES["arousal"]
         setpoint = clamp(rates.arousal_setpoint, low, high)
         regress_rate = rates.arousal_regress
-        if state.valence >= rates.arousal_lock_threshold:
+        if rates.arousal_lock_threshold < 1.0 and state.valence > rates.arousal_lock_threshold:
             regress_rate *= rates.arousal_lock_factor
         force = 0.0
         if state.arousal > setpoint:
@@ -1595,7 +1653,9 @@ class Engine:
                 parts.append("有点想找对方")
         elif state.connection >= gate["observation"]:
             parts.append("偶尔会想起对方")
-        if state.valence <= -0.4:
+        if state.valence <= -0.7:
+            parts.append("心里很闷")
+        elif state.valence <= -0.4:
             parts.append("心情低")
         elif state.valence >= 0.4:
             parts.append("心情不错")

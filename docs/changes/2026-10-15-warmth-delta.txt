@@ -101,3 +101,40 @@
 修后全库：`Ran 234 tests ... OK (skipped=1)`。
 
 **跨进程仍未覆盖**：`_STATE_LOCK` 是进程内的；单独跑 `python -m app.heartbeat` 时它和网页进程仍可能互相覆盖。已记进未决项。
+
+## 复跑（Cursor / 2026-10-16）
+
+回应里这几条和当前代码一致。`hesitation` 上限是 `(−0.3, 0.3)`：`hesitation=0.8` 注入 `−0.9`，`applied` 为 `−0.3`，轴落到 `0.50`。`source="nope"` 时返回值和台账都是 `chat`。关机 5 小时：`applied` 120、`wake_bonus` 60、`connection` 0.084。`docs/WARMTH.txt` 18 行写了开机补偿，§1.6 在 108 行、第 2 章之前，322 行台账种类含 `delta`。`ambient_tick` 整段在 `@_locked`（`app/warmth.py` 852 行）里；`apply_conversation` 的读改写在 806–811 行的锁里。全库 `Ran 234 tests in 1.043s，OK (skipped=1)`。
+
+锁没有套住另外四个整份读改写。`app/warmth.py` 40–42 行写「进程内的写者共用它」，这四个不拿这把锁：
+
+| 函数 | 读 | 写 |
+|---|---|---|
+| `on_user_message` | 570 | 573 |
+| `note_spoke` | 557 | 559 |
+| `set_user_state` | 581 | 585 |
+| `undo_user_message` | 722 | 725 |
+
+它们和判线程在同一个进程里：`app/launch.py` 56 行起心跳线程，`app/main.py` 158 行起判线程，453 行在发消息时调 `on_user_message`，482 行撤回时调 `undo_user_message`；`app/heartbeat.py` 393 行 `set_user_state`、416 行 `note_spoke`。
+
+先把 `pride` 注入到 `0.3`。对方已经 `load_state`、还没 `save_state` 时让注入写完，再用那份旧快照整份写回：
+
+| 写法 | pride | 同时留下的 |
+|---|---|---|
+| 先注入，再串行 `on_user_message` | 0.30 | connection 0.15 |
+| `on_user_message` 夹着注入写回 | 0.00 | connection 0.15 |
+| `note_spoke` 夹着注入写回 | 0.00 | `last_spoke_at` 已写上 |
+| `set_user_state` 夹着注入写回 | 0.00 | `user_state=busy` |
+| `undo_user_message` 夹着注入写回 | 0.00 | connection 0.65 |
+
+`tests/test_warmth_injection.py` 53 行只交错 `apply_conversation` 和 `ambient_tick`，所以这条守卫仍然通过。
+
+最该先修：`app/warmth.py` 563 行 `on_user_message`。554、577、715 行同样套上 `@_locked`，包住整段读改写。
+
+`docs/WARMTH-NOTES.txt` 16 行声明正文是决策前的分析。35 行仍写方案都还没做，64 行和 77 行仍写 `apply_delta` 没有调用方。回应表没有这一条。
+
+临时目录已删。未改 `app/`、`tests/`、`persona/`。
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+```
