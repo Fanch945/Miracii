@@ -111,5 +111,18 @@ class UserStateHistoryTests(Base):
         self.assertFalse(self.log.exists())
 
 
+class BacklogCommentTests(Base):
+    """学习队列的头两行是注释；把它们当成待办会让档位虚高一档。"""
+
+    def test_comment_lines_are_not_counted(self):
+        queue = self.root / "memory" / "learn_queue"
+        queue.mkdir(parents=True)
+        (queue / "pending.jsonl").write_text(
+            "# 每行一条 JSON\n# 示例：{}\n{\"claim\": \"a\"}\n{\"claim\": \"b\"}\n", encoding="utf-8"
+        )
+        self.assertEqual(warmth.backlog_count(None), 2)
+
+
 if __name__ == "__main__":
+
     unittest.main()

@@ -700,7 +700,7 @@ def backlog_count(
         age = (stamp - datetime.fromtimestamp(stat.st_mtime, tz=stamp.tzinfo)).total_seconds() / 60.0
         if age > fresh_within_minutes:
             return 0
-    return len([line for line in text.splitlines() if line.strip()])
+    return len([line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")])
 
 
 def view(persona_id: str | None = None, *, now: datetime | None = None) -> dict:
