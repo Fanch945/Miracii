@@ -37,6 +37,14 @@ AXIS_RANGES: dict[str, tuple[float, float]] = {
 }
 
 MAX_TICK_MINUTES = 60.0
+# 活动种类 → 沉浸度档位（参照实现的 immersionMap）
+IMMERSION_BY_KIND: dict[str, float] = {
+    "reading": 0.6,
+    "search": 0.4,
+    "browse_snitch": 0.35,
+    "browse": 0.35,
+    "observe": 0.15,
+}
 # 状态文件是"读—改—写"，而写它的不止一处：心跳的空闲 tick 与对话判线程（`main._judge_turn_async`）
 # 会同时读写同一份 `warmth-state.json`。没有这把锁，后写的 tick 会盖掉刚注入的那一笔（复核实测到）。
 # 进程内的写者共用它；跨进程（单独跑 `python -m app.heartbeat`）仍不覆盖——见改动账的未决项。
@@ -932,9 +940,13 @@ def ambient_tick(
         engine = Engine(resolved, state)
         activity = activity_for_backlog(backlog) if backlog is not None else None
         if activity:
-            # 她手上有没有事，决定了连接需求涨得快不快（每拍重申一次，积压还在她就一直在忙）。
-            # `at=stamp` 不能省：活动时钟必须和这一拍的时钟一致，否则衰减会按两个时钟算。
-            engine.set_activity(activity, at=stamp)
+            # 积压是**地板**，不是天花板：对话注入的更高沉浸不该被压回档位值（复核指出）。
+            # 低于档位才抬上去；高于就只刷新活动时钟，交给衰减——否则 0.85 会被压成 0.60。
+            floor = IMMERSION_BY_KIND.get(activity, 0.0)
+            if engine.state.immersion < floor:
+                engine.set_activity(activity, at=stamp)
+            else:
+                engine.state.last_activity_at = stamp
         # 没有积压时**不动** immersion：它可能是对话注入抬起来的，交给自然衰减。
         # 早先这里无条件 set_activity(None)，把每一次对话抬起的沉浸度当场清零（人报的"高沉浸"就是这么消失的）。
         # 空档超过单拍上限 = 应用刚被重新打开 → 给一次开机补偿（`wake_bonus_minutes`）
@@ -1243,6 +1255,14 @@ def review(persona_id: str | None = None, *, days: float = 3, limit: int = 60, p
         for row in deltas[-limit:]:
             moved = "、".join(f"{name} {value:+.2f}" for name, value in (row.get("applied") or {}).items())
             lines.append(f"  {_short_time(row.get('at'))}  [{row.get('source')}] {moved}  {row.get('note') or ''}")
+    states = [row for row in rows if row.get("kind") == "state"]
+    if states:
+        lines.append("他在不在（user_state 变更）：")
+        for row in states[-limit:]:
+            lines.append(
+                f"  {_short_time(row.get('at'))}  → {row.get('user_state')}  "
+                f"[{row.get('source')}] {row.get('note') or ''}"
+            )
     if marks:
         lines.append("人工标注：")
         for row in marks[-limit:]:
@@ -1321,7 +1341,7 @@ class Engine:
 
         与参照一致（jiwen.js:554-573）：未知类型按 0.2，设定时下限 0.01——有活动就不会是 0。
         """
-        mapping = {"reading": 0.6, "search": 0.4, "browse_snitch": 0.35, "browse": 0.35, "observe": 0.15}
+        mapping = IMMERSION_BY_KIND
         if kind:
             self.state.immersion = max(0.01, mapping.get(kind, 0.2))
             self.state.last_activity_at = at or _now()
@@ -1438,12 +1458,16 @@ class Engine:
         drift = 0.0
         if rates.valence_connection_drift_rate > 0 and state.connection >= rates.valence_connection_drift_threshold:
             drift = rates.valence_connection_drift_rate * state.connection
-        net = regress - drift
         target = clamp(rates.valence_setpoint, low, high)
-        if net >= 0:
-            state.valence = _approach(state.valence, target, net * mins)
+        if state.valence > target:
+            # 高于基线：回归朝下、下沉也朝下——**两个力相加**，不是相减（复核指出）
+            state.valence = clamp(state.valence - (regress + drift) * mins, target, high)
         else:
-            state.valence = clamp(state.valence + net * mins, low, high)
+            net = regress - drift  # 低于基线时两力竞争：回归往上、下沉往下
+            if net >= 0:
+                state.valence = _approach(state.valence, target, net * mins)
+            else:
+                state.valence = clamp(state.valence + net * mins, low, high)
 
     def _drift_arousal(self, mins: float, rates: Rates) -> None:
         state = self.state
@@ -1653,10 +1677,11 @@ class Engine:
                 parts.append("有点想找对方")
         elif state.connection >= gate["observation"]:
             parts.append("偶尔会想起对方")
-        if state.valence <= -0.7:
+        band = valence_band(state.valence)
+        if band in {"明显低落", "很低落"}:
             parts.append("心里很闷")
-        elif state.valence <= -0.4:
-            parts.append("心情低")
+        elif band == "有点闷":
+            parts.append("心情低落")
         elif state.valence >= 0.4:
             parts.append("心情不错")
         if state.arousal >= 0.7:

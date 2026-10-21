@@ -54,3 +54,32 @@ user_state 变更入账带来源、同值不重复、非法值不动。
 ## 复核
 
 （留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）
+
+## 复核（Cursor / 2026-10-21）
+
+低连接回到 0、默认锁哨兵关闭、心跳把来源传进去、`kind=state` 写入 jsonl，这几条和记录一致。临时目录里：connection 0.10、valence -0.15，60 分钟后 valence 0.0000。connection 钉在 1.0、从 0 出发，一拍 60 分钟是 -0.4200；连续四拍是 -0.42、-0.84、-1.0、-1.0。默认阈值 1.0 时回归没有乘 0.15。阈值改成 0.5、connection 钉在 0.5：60 分钟 -0.0600，锁没开；0.51 是 -0.3222，锁开了。valence 1.0、arousal 0.50，60 分钟后 arousal 0.2000。`run_warmth_tick` 在场判断的调用是 `set_user_state(..., "away", source="presence", note="")`，模型判断是 `source="model", note="模型判断"`。台账两行是 `kind=state`，带 `user_state` / `source` / `note`。
+
+记录写 244 项，那是 `99bd2bf` 当时的数。其后 `71a9e21` 又加了 1 项，这次工作区是 245 项。20:09 前后全库 `Ran 245 tests in 1.213s OK (skipped=1)`。墙上时钟过了 2026-10-21 12:10 UTC（北京时间 20:10）之后，同一条命令是 `Ran 245 tests in 1.128s FAILED (failures=1, skipped=1)`。
+
+五条对不上：
+
+1. `tests/test_warmth_second_pass.py` 80 行 `apply_conversation` 没有传入 `now`，`last_activity_at` 用的是墙上时钟。81 行的 tick 钉在 `self.start + 10 分钟`，即 2026-10-21 12:10 UTC。过了这个时刻，衰减间隔被夹成 0，沉浸停在 0.3。83 行失败：`AssertionError: 0.3 not less than 0.3`。把 `_now` 拨到 2026-10-22 00:00 UTC 再注入，tick 仍在 12:10，immersion 仍是 0.3000。生产路径两边都用 `_now()`，衰减本身成立；坏的是这条测试。71 行那条只断言 `> 0`，时钟倒了也仍然通过。
+
+2. jsonl 里有 `kind=state`，`--review`、面板、命令框都看不到来源。`app/warmth.py` 1234–1236 行只收集 tick / delta / mark，1258 行只打印 tick。临时目录两条 state（busy/model、away/presence）跑 `review()`，输出是「近 3 天：0 次值得记的 tick，0 次明显的情绪注入，0 条人工标注」，后面「最近的动作：」是空的，正文里没有 busy。`app/static/warmth.js` 97–99 行和 `app/static/console.js` 208 行把其余种类都画成 tick。用一条 state 行套同一段拼接，得到 `10-21 12:00 [tick] c=0.000 无触发`，`source` 和 `note` 都没出现。
+
+3. 六档话和内心话不是同一套界限。`valence_band(-0.30)` 是「有点闷」，`prompt_context`（`app/warmth.py` 1656–1661 行）是「平静」。-0.40：档「有点闷」，内心话「心情低」。-0.70：档「明显低落」，内心话「心里很闷」。+0.20：档「还不错」，内心话「平静」。`--view` 的 JSON 在 723 行带了 `valence_band`。面板 `app/static/warmth.js` 108 行、命令框 `app/static/console.js` 192 行只画 `words`，`--watch`（743 行）也不带档位。
+
+4. `docs/WARMTH.txt` 仍是旧式子。39–41 行仍是先回归再下沉，锁仍写 `c ≥ valence_lock_threshold`。154 行写 11 小时 20 分 valence ≤ -0.3。按现在的式子、20 分钟一拍、一直不说话：680 分钟 valence -0.219，第一次 ≤ -0.3 在 720 分钟。322 行台账种类没有 `state`。
+
+5. 风险节写两个来源共存、不互相覆盖。有积压时 `ambient_tick` 937 行仍调用 `set_activity`，1326 行把 immersion 写成档位绝对值。注入 0.85 再 `backlog=12`，下一拍是 0.6000。`activity_for_backlog` 668 行的注释仍写 `None` 会把沉浸度清掉；积压为 0 时这一拍已经不调用它。
+
+另外：记录写的 `net = regress − drift` 和 `app/warmth.py` 1443–1446 行一致。设定点以上，这个净速度是朝 0 走的减速。连接钉死、c=1、valence +0.50，60 分钟后是 +0.0800。回归和等待这时都往下，相加是 0.50 − (0.005+0.012)×60 = −0.52。默认速率、c=0.10、valence +0.50，60 分钟后是 +0.3022。测试只从 -0.15 和 0 出发。若「两个力」是指设定点以上也相加，这里差一截；若就是要这个标量净速度，请在回应里写明，并补一条从正值出发的测试。
+
+最该先修：`tests/test_warmth_second_pass.py` 第 80 行。`apply_conversation` 加上 `now=self.start`。全库现在是红的。
+
+```powershell
+.venv\Scripts\python.exe -m unittest tests.test_warmth_second_pass.ImmersionTests.test_an_injected_immersion_decays_on_its_own -v
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+```
+
+临时目录已删。未改 `app/`、`tests/`、`persona/`。

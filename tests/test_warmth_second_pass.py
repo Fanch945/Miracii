@@ -70,14 +70,14 @@ class ImmersionTests(Base):
 
     def test_a_tick_without_backlog_does_not_wipe_an_injected_immersion(self):
         warmth.save_state(None, warmth.State(last_tick=self.start), path=self.state)
-        warmth.apply_conversation(None, {"immersion": 0.3}, path=self.state, log=self.log)
+        warmth.apply_conversation(None, {"immersion": 0.3}, path=self.state, log=self.log, now=self.start)
         self.assertGreater(warmth.load_state(path=self.state)[0].immersion, 0.0)
         warmth.ambient_tick(now=self.start + timedelta(minutes=20), path=self.state, backlog=0, log=self.log)
         self.assertGreater(warmth.load_state(path=self.state)[0].immersion, 0.0)
 
     def test_an_injected_immersion_decays_on_its_own(self):
         warmth.save_state(None, warmth.State(last_tick=self.start), path=self.state)
-        warmth.apply_conversation(None, {"immersion": 0.3}, path=self.state, log=self.log)
+        warmth.apply_conversation(None, {"immersion": 0.3}, path=self.state, log=self.log, now=self.start)
         warmth.ambient_tick(now=self.start + timedelta(minutes=10), path=self.state, backlog=0, log=self.log)
         risen = warmth.load_state(path=self.state)[0].immersion
         self.assertLess(risen, 0.3)  # 按 immersion_decay 自然退去
@@ -123,6 +123,30 @@ class BacklogCommentTests(Base):
         self.assertEqual(warmth.backlog_count(None), 2)
 
 
+class SecondReviewFixTests(Base):
+    """复核（2026-10-21）抓到的两处语义。"""
+
+    def test_above_baseline_both_forces_pull_down(self):
+        eng = warmth.Engine()
+        eng.state.connection = 1.0
+        eng.state.valence = 0.50
+        eng.tick(60, catch_up_minutes=0)
+        # 回归朝下 + 下沉也朝下：(0.005 + 0.012) × 60 = 1.02 → 夹到基线 0
+        self.assertAlmostEqual(eng.state.valence, 0.0, places=6)
+
+    def test_a_backlog_is_a_floor_not_a_ceiling_for_immersion(self):
+        # 单次注入上限是 ±0.3，0.85 这种值要靠多轮累积；这里直接造出那个状态
+        warmth.save_state(None, warmth.State(immersion=0.85, last_tick=self.start), path=self.state)
+        warmth.ambient_tick(now=self.start + timedelta(minutes=1), path=self.state, backlog=12, log=self.log)
+        self.assertAlmostEqual(warmth.load_state(path=self.state)[0].immersion, 0.85, delta=0.02)
+
+    def test_a_backlog_still_raises_a_low_immersion(self):
+        warmth.save_state(None, warmth.State(immersion=0.0, last_tick=self.start), path=self.state)
+        warmth.ambient_tick(now=self.start + timedelta(minutes=1), path=self.state, backlog=12, log=self.log)
+        self.assertAlmostEqual(warmth.load_state(path=self.state)[0].immersion, 0.6, delta=0.02)
+
+
 if __name__ == "__main__":
+
 
     unittest.main()
