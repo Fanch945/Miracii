@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -85,7 +86,10 @@ class ImmersionTests(Base):
 
     def test_a_real_backlog_still_occupies_her(self):
         warmth.save_state(None, warmth.State(last_tick=self.start), path=self.state)
-        warmth.ambient_tick(now=self.start + timedelta(minutes=20), path=self.state, backlog=12, log=self.log)
+        experiment = replace(warmth.defaults(), immersion_from_backlog=True)
+        warmth.ambient_tick(
+            now=self.start + timedelta(minutes=20), path=self.state, backlog=12, log=self.log, config=experiment
+        )
         self.assertGreater(warmth.load_state(path=self.state)[0].immersion, 0.0)
 
 
@@ -142,7 +146,10 @@ class SecondReviewFixTests(Base):
 
     def test_a_backlog_still_raises_a_low_immersion(self):
         warmth.save_state(None, warmth.State(immersion=0.0, last_tick=self.start), path=self.state)
-        warmth.ambient_tick(now=self.start + timedelta(minutes=1), path=self.state, backlog=12, log=self.log)
+        experiment = replace(warmth.defaults(), immersion_from_backlog=True)
+        warmth.ambient_tick(
+            now=self.start + timedelta(minutes=1), path=self.state, backlog=12, log=self.log, config=experiment
+        )
         self.assertAlmostEqual(warmth.load_state(path=self.state)[0].immersion, 0.6, delta=0.02)
 
 

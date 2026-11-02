@@ -187,6 +187,10 @@ class Config:
     # 应用关着时她并不"在等"，所以单拍只按 60 分钟算。但**开机那一下**补一点：
     # 人希望"回来时她已经在想你"，而不是从 0 开始。默认 60 分钟；0 = 关掉这个补偿。
     wake_bonus_minutes: float = 60.0
+    # **实验开关，默认关闭**：早先把"学习队列的新鲜积压"当成"她正在忙"，
+    # 结果每晚 23:00 的 daily 巩固写 2–3 条待办 → 队列新鲜两小时 → 她被判成埋头读书（沉浸 0.6）。
+    # 那是记忆维护的待办，不是她的活动。真活动要等环境 API（见 docs/WARMTH-NOTES.txt）。
+    immersion_from_backlog: bool = False
     # `user_state` 由轻量模型从最近的对话推断；超过这个时长就不再采信。
     user_state_ttl_minutes: float = 180.0
     # 只有连接需求逼近开口线时才值得花一次模型调用（见 needs_user_state）
@@ -270,6 +274,7 @@ def template() -> dict:
         "speak_cooldown_minutes": 45.0,
         "max_tick_minutes": 60.0,
         "wake_bonus_minutes": 60.0,
+        "immersion_from_backlog": False,
         "reply_delta": {"connection": -0.25, "valence": 0.05, "arousal": -0.15, "hesitation": -0.20},
         "extra_axes": [],
     }
@@ -340,6 +345,7 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
         "speak_cooldown_minutes",
         "max_tick_minutes",
         "wake_bonus_minutes",
+        "immersion_from_backlog",
         "user_state_ttl_minutes",
         "user_state_trigger_ratio",
         "reply_delta",
@@ -370,6 +376,14 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
     # 复核抓到：字段加进 Config 却没接进 load_config，等于"可配"是空话
     max_tick = _positive("max_tick_minutes", base.max_tick_minutes)
     wake_bonus = _positive("wake_bonus_minutes", base.wake_bonus_minutes, allow_zero=True)
+    raw_backlog = raw.get("immersion_from_backlog")
+    if raw_backlog is None:
+        from_backlog = base.immersion_from_backlog
+    elif isinstance(raw_backlog, bool):
+        from_backlog = raw_backlog
+    else:
+        notes.append(f"immersion_from_backlog: {raw_backlog!r} 不是布尔，用默认")
+        from_backlog = base.immersion_from_backlog
     state_ttl = _positive("user_state_ttl_minutes", base.user_state_ttl_minutes, allow_zero=True)
 
     ratio_raw = raw.get("user_state_trigger_ratio")
@@ -459,6 +473,7 @@ def load_config(persona_id: str | None = None, *, path: Path | None = None) -> t
         speak_cooldown_minutes=cooldown,
         max_tick_minutes=max_tick,
         wake_bonus_minutes=wake_bonus,
+        immersion_from_backlog=from_backlog,
         user_state_ttl_minutes=state_ttl,
         user_state_trigger_ratio=ratio,
         reply_delta=reply,
@@ -486,6 +501,7 @@ def effective_config(config: Config) -> dict:
         "speak_cooldown_minutes": config.speak_cooldown_minutes,
         "max_tick_minutes": config.max_tick_minutes,
         "wake_bonus_minutes": config.wake_bonus_minutes,
+        "immersion_from_backlog": config.immersion_from_backlog,
         "user_state_ttl_minutes": config.user_state_ttl_minutes,
         "user_state_trigger_ratio": config.user_state_trigger_ratio,
         "reply_delta": dict(config.reply_delta),
@@ -938,7 +954,7 @@ def ambient_tick(
 
     with _STATE_LOCK:
         engine = Engine(resolved, state)
-        activity = activity_for_backlog(backlog) if backlog is not None else None
+        activity = activity_for_backlog(backlog) if (backlog is not None and resolved.immersion_from_backlog) else None
         if activity:
             # 积压是**地板**，不是天花板：对话注入的更高沉浸不该被压回档位值（复核指出）。
             # 低于档位才抬上去；高于就只刷新活动时钟，交给衰减——否则 0.85 会被压成 0.60。

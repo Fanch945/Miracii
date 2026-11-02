@@ -446,6 +446,7 @@ class ConfigTests(unittest.TestCase):
                 "speak_cooldown_minutes",
                 "max_tick_minutes",
                 "wake_bonus_minutes",
+                "immersion_from_backlog",
                 "user_state_ttl_minutes",
                 "user_state_trigger_ratio",
                 "reply_delta",
@@ -469,6 +470,7 @@ class ConfigTests(unittest.TestCase):
             "speak_cooldown_minutes": 30.0,
             "max_tick_minutes": 120.0,
             "wake_bonus_minutes": 15.0,
+            "immersion_from_backlog": True,
             "user_state_ttl_minutes": 30.0,
             "user_state_trigger_ratio": 0.9,
             "reply_delta": {"connection": -0.1},
@@ -1084,7 +1086,10 @@ class UserStateTests(unittest.TestCase):
         state = warmth.State()
         state.last_tick = self.start
         warmth.save_state(None, state, path=self.state)
-        busy = warmth.ambient_tick(now=self.start + timedelta(minutes=60), path=self.state, backlog=12)
+        experiment = replace(warmth.defaults(), immersion_from_backlog=True)
+        busy = warmth.ambient_tick(
+            now=self.start + timedelta(minutes=60), path=self.state, backlog=12, config=experiment
+        )
 
         warmth.save_state(None, warmth.State(last_tick=self.start), path=self.state)
         idle = warmth.ambient_tick(now=self.start + timedelta(minutes=60), path=self.state, backlog=0)
