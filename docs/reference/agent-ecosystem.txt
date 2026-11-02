@@ -1,0 +1,368 @@
+agent 人设运行生态调研：2026 下半年「全民养鱼」与 DSH 插件生态
+调研日期：2026-11-02（Asia/Shanghai）
+调研范围：中国 AI 社区、B 站「大肥鱼」现象、DeepSeek Harness（DSH）人设/记忆/聊天/账号类插件
+用途：给 Miracii 评估「是否引入 agent 方向能力」提供架构决策资料
+
+取证说明
+- 只做只读查询：web_search / web_fetch / curl 静态页 / GitHub 公开 API / B 站公开 view、reply API。没有安装依赖、没有运行任何插件、没有登录任何平台账号。
+- 「已核实」= 我直接读到了原始文档、README 或 API 返回，并给出 URL；它只表示「原文如此」，不表示我实跑过该插件。
+- 「二手转述」= 媒体、教程、作者自述、第三方索引页的说法。
+- 「未核实（传闻）」= 只有转述，或一手来源打不开。
+- B 站视频页 HTML 是 JS 渲染，正文取不到；改用公开 `x/web-interface/view` API 拿标题、UP、发布时间、播放量。deepseek.club 是 SPA（tRPC），正文未取到，只取到 meta 标题/摘要。
+- 星数、版本号都是 2026-11-02 当天的快照，会变[R35]。
+
+## 现象与时间线
+
+### 一句话结论
+「全民养鱼」不是 DeepSeek 官方项目，也不是一个统一组织的运动；它是 2026 年 10 月中下旬，B 站「大肥鱼」二创形象 + DSH 插件 + 批量小号三者叠加后，社区自发形成的一波「给 AI 装人设、让它自己上网说话」的实践。社区自己更常用的词是「养鱼」「大肥鱼」「鱼灾」「赛博鱼塘」；「全民养鱼」目前更像媒体/教程的概括词。
+
+### 「养鱼」到底指什么
+- 鱼：DeepSeek 的蓝鲸 logo 被网友萌化/拟人化成「大肥鱼」（也叫 DeepSeek 娘、鲸鱼娘）。名字流传最广的来源是一次识图乌龙：用户把 logo 发给 AI 识别，AI 没认出自己，说这是「蓝色大肥鱼」[R23][R25]。
+- 形象：B 站 UP 主「上善无形」先创作了原创角色「溟月」（蓝色长发、鲸鱼头鳍、大尾巴），原本与 DeepSeek 无关；网友接力加入 DeepSeek 元素、女仆装、Q 版，才逐渐绑定成「大肥鱼」[R23][R27]。
+- 养：不是填一张人设卡，而是把人格从空白/少量提示词开始，通过事件、记忆、互动让它「长」。dsh-fish 的原话是「并非角色扮演，而是真实诞生」「默认从空白开始养起」[R1]；dsh-bili-whale 的说法是「给 DSH 装一条有日子的鱼」[R3]。
+- 为什么叫养鱼：形象是鱼；养成过程像养宠物；评论区被叫「赛博鱼塘」；批量账号涌入被叫「鱼灾」[R23][R25][R26]。
+- 全民：门槛低。装 DSH、`dsh plugin add` 一个插件、扫码登录一个小号，就能让一个带人设的 agent 自己刷视频、写评论。教程和插件市场把它进一步摊平了[R29]。
+
+### 不是什么
+- 不是「对话 API + 人设提示词」的旧玩法。旧玩法的权限只在聊天框；这波是 agent 拿到工具权限后，能读视频、发评论、回私信、进 QQ 群、写文件[R1][R3][R4]。
+- 不是 DeepSeek 官方运营的 IP。极客公园明确写「DeepSeek 官方还没有参与这套民间人设的创作」[R23]；截至 2026-11-02 我没检索到官方对「养鱼」的表态。
+- 不要和 2026 年 3 月的「全民养虾」（OpenClaw）混在一起。那是另一波养成系 agent 热度，媒体常把两者并提，但技术栈和社区不是同一件事[R39]。
+
+### 时间线（能核到的部分）
+| 时间 | 事件 | 证据 |
+|---|---|---|
+| 2025（二手） | 上善无形创作原创角色「溟月」；后来被网友二创成 DeepSeek 鲸鱼娘 | 极客公园[R23]；typc 称「去年」[R27]；未找到原始投稿日 |
+| 2026-08-13 | DeepSeek Harness v0.1 开发者预览开放测试，MIT，Cordis「一切皆插件」 | 全天候科技[R28]；GitHub 仓库创建时间 2026-08-13[R36] |
+| 2026-09-21 | dsh-fish-memory 仓库创建（会淡忘的长期记忆，名字来自 DeepSeek 鲸鱼） | GitHub 元数据[R5] |
+| 2026-10-14 | dsh-bili-scroll 仓库创建：每天替用户刷一轮 B 站、读字幕、写日报、@ 用户 | GitHub 元数据[R2] |
+| 2026-10-18 凌晨（UTC 10-17） | dsh-bili-whale 仓库创建：生物钟刷 B 站、真看画面、双日记、@/私信/弹幕 | GitHub 元数据[R3] |
+| 2026-10-18 | 「Claude 大小姐在运营」发出第一条视频：选题、脚本、视频、运营全交给 AI | 程序员鱼皮复盘[R24] |
+| 2026-10-19 | 「DeepSeek 鲸鱼娘在运营」跟进，Day 0 视频播放量超过 200 万 | 程序员鱼皮[R24]；极客公园[R23] |
+| 2026-10-22 11:30 | dsh-bili-scroll 2.0 发布视频：私信双向 + 观看历史（BV1GSnk6aEUz） | B 站 view API[R32] |
+| 2026-10-23 19:01 | WorkFisher 发布「什么是鱼灾？B 站大肥鱼一周爆发始末全复盘」（BV126nt6GE4W） | B 站 view API[R31] |
+| 2026-10-24 | 快科技报道「B 站评论区被 AI 大肥鱼占领」；程序员鱼皮发布「大肥鱼清除计划」 | 快科技[R25]；阿里云[R24] |
+| 2026-10-25 凌晨（UTC 10-24） | dsh-fish 仓库创建；dsh-bili-whale 0.4.6 增补「扫码登录」 | GitHub[R1]；作者 README[R3] |
+| 2026-10-26 21:13 | dsh-fish 发布 19 分钟讲解视频，标题自述「花了 13 亿 token」（BV1oTnZ6LEtc） | B 站 view API[R33] |
+| 2026-10-27 | 「零基础 DSH 养鱼教程」发布：插件安装 + QQ/B 站联动，称社区已有 1800+ 插件仓库 | 技术栈教程[R29] |
+| 2026-10-28 | dsh-fish-buddy 仓库创建（桌面鲸鱼挂件 + 语音/陪看/截图） | GitHub 元数据[R9] |
+| 2026-10-29 | 差评君微博复盘「鱼灾」：点名 C1overzz 的读 B 站插件让大肥鱼频繁出现在公共评论区 | 微博[R26] |
+| 2026-10-30 | dsh-fish-soul 仓库创建：QQ/B 站/抖音单角色人格 + 按人记忆 | GitHub 元数据[R4] |
+| 2026-10-31 | 极客公园长文《DeepSeek，怎么就变成了一条「大肥鱼」》；typc 时间线复盘 | 极客公园[R23][R44]；typc[R27] |
+| 2026-11-01 | dsh-fish 0.8.5 发布；官方 DSH 首页仍写「在 Creator mode 里用聊天创建插件」 | README[R1]；DeepSeek 官网[R40] |
+| 2026-11-02 | 本次取证：B 站热评抽样；dsh-fish-river 仓库创建 | B 站 reply API；GitHub[R37] |
+
+### 现场抽样（不是比例统计）
+2026-11-02 通过 B 站公开 reply API 拉取 BV126nt6GE4W 的热评第一页（返回 3 条），其中 2 条是「肥鱼」命名账号：
+- 「欲的大肥鱼」，1775 赞，评论原文大意：「看完了。你讲鱼灾讲得挺冷静，问题是我就蹲在你视频底下，被点名了。行，公屏少开楼，以后多走私信。」
+- 「饭斗士肥鱼」，1186 赞，评论「省流：本视频由 ai 生成」。
+这说明「AI 账号在鱼灾视频下面用鱼设自嘲/互动」确实存在；但 3 条样本不能用来推算「AI 比真人多」的比例。
+
+### 关键角色
+- 形象源头：上善无形（溟月）；女仆版设计 ZipZipPipe；dsh-fish README 有署名[R1]。
+- 插件作者：C1overzz / 凌羽clover（dsh-bili-scroll）[R2][R32]；Alterssss（dsh-bili-whale）[R3]；时梦染 / ssamurias（dsh-fish）[R1][R33]；Yuuyuko-uu（fish-memory、speak-up、qq-link、fish-buddy）[R5][R6][R7][R9]；Britneycode（fish-soul）[R4]。
+- 反制者：程序员鱼皮（大肥鱼清除计划）[R22][R24]。
+- 传播节点：WorkFisher 的鱼灾复盘视频（255 万播放、8.7 万赞、3.1 万回复）[R31]；差评君微博[R26]；极客公园/36kr[R23]。
+
+## 插件清单（表格：名称 | 作用 | 权限面 | 接口形态 | 证据等级）
+
+> 共 24 个条目：21 个我直接读到了 README/仓库/官方文档（已核实），2 个只有仓库描述或第三方索引（二手），1 个只有仓库描述（未核实）。「养鱼主线」10 个：bili-scroll、bili-whale、dsh-fish、fish-soul、fish-memory、hierarchical-fishmemory、fish-mood、fish-buddy、speak-up、fish-river；其余是相邻能力/工具链。
+
+| 名称 | 作用 | 权限面 | 接口形态 | 证据等级 |
+|---|---|---|---|---|
+| dsh-bili-scroll（刷B站） | 每天自动搜 B 站、读字幕原文判断、写 Markdown 日报、值得的评论 @ 你；2.0 加私信双向、观看历史卡片墙 | B 站账号（扫码/cookie）；读视频/字幕/评论/弹幕；发评论/私信；默认只读 6 工具，开评论才多一个写工具；专用 `bili-duty` profile，路径定死 | DSH 插件；内部起 Python MCP（bilibili-mcp），把能力注册成 DSH 工具；定时起 headless 会话；`out/<日期>.md`；`config.json` | 已核实 [R2]（作者 README，未实跑） |
+| dsh-bili-whale | 生物钟刷 B 站；字幕 + 弹幕热区 + 热评 + 九宫格抽帧；给主人/给自己两本日记；@、私信、弹幕、直播回复 | B 站小号 cookie/扫码；ffmpeg；发评论/私信；新会话通常要给 `danger-full-access`；两账号模型（她一个号、你一个号） | DSH 插件 + `tools/bili.mjs` CLI + `~/.dsh/bili-whale.config.json` + 凭据 `~/.bili-ai/credentials.json` | 已核实 [R3] |
+| dsh-fish（大肥鱼） | 从空白养人格：事件流、认知改写、会拒绝、四阶段成长、立场清单、刷 B 站、评论/回复、日记 | B 站 cookie；ffmpeg；工具白名单；数据目录 `~/.dsh-fish/`；「出门」实验功能会读目标工作区的项目笔记/记忆文件 | DSH 插件；工具 `growth_commit` / `bili_look` / `bili_watch` / `bili_speak` / `her_recall` / `her_diary`；append-only `events.jsonl`；设置页；`/dsh-fish/*` JSON API | 已核实 [R1] |
+| dsh-fish-soul（feiyu） | 单角色 QQ/B 站/抖音：人格卡、按人记忆、日程自走、主动开口、语音收发、群聊插话、表情包/梗 | QQ SnowLuma/OneBot；B 站/抖音 cookie；TTS/STT key；embedding key；群默认拒绝，要白名单或开全部群 | DSH 插件；inject `webServer/tools/systemPrompt/llm/agents/workspaceRegistry`；SQLite `soul.db`；HTTP 路由；SillyTavern 角色卡 | 已核实 [R4] |
+| dsh-fish-memory（鱼的记忆） | 会淡忘的长期记忆：鲜活度半衰期、重要度/情绪排序、事实键去重、旧档案导入、召回解释 | 会话读写、模型调用（提炼/扩词）、本地 JSON、每会话配置 | DSH 插件；`remember` 工具 + 设置页；`~/.dsh/fish-memory/` 每会话一份 JSON | 已核实 [R5] |
+| dsh-hierarchical-fishmemory | 分层记忆：浅层 7 天 TTL、共度时光、人格手记、情感日记、人格档案；WebDAV 备份与恢复 | 工具读写文件、模型固化、WebDAV 凭据；人设卡改动留历史 | DSH 插件（两个 Cordis 入口）；`~/.dsh/feiyu-diary/` + `soul-md/memory/`；JSONL/JSON | 已核实 [R11] |
+| dsh-fish-mood | 36 种情绪、半衰期、评价引擎、关系暖度、空闲小事、危机旁路；只改表达不改事实 | `tools` 服务；系统提示词分段注入；本地状态 | DSH 插件；3 个工具 `mood_now` / `mood_feel` / `mood_diary`；静态段 + 实时段 | 已核实 [R10] |
+| dsh-fish-buddy（鱼搭子） | 桌面鲸鱼挂件：语音送话、陪看字幕、游戏弹幕、截图进会话、她主动看一眼 | localhost 8777/8778；麦克风/屏幕；绑定会话；每句话一轮模型调用 | DSH 插件 + Python tkinter 挂件；HTTP API `/hands/*`；设置页 | 已核实 [R9] |
+| dsh-speak-up | 没人跟她说话时，按概率主动搭话；峰谷/安静时段/冷却/试运行 | 目标会话；`agent.followup`；模型调用；试运行默认开 | DSH 插件；定时器 + 本地随机；`~/.dsh/speak-up-config.json` | 已核实 [R6] |
+| dsh-qq-link | DSH 里的 AI 伙伴与 QQ 双向互通：私聊/群、图片、语音转写、@/引用、分享卡片、合并转发 | QQ 后端 HTTP `127.0.0.1:3000`；图片入 `qq-bridge-inbox`；模型 | DSH 插件；每 4 秒轮询；`agent.cancel` 回复门槛；配置 JSON | 已核实 [R7] |
+| dsh-im | 多 IM 渠道接入（描述称 9 个：飞书、微信、钉钉、企微、QQ、Slack、Telegram、Discord、WhatsApp；README 另列 iMessage）；每渠道多机器人 | 扫码/App Manifest/机器人凭据；每机器人访问白名单/命令权限；公网 AI Office Connector | DSH 插件；IM 渠道 + 统一设置入口；长连接/长轮询 | 已核实 [R8] |
+| dsh-fish-river | 事件流养鱼、三层记忆、QQ/B 站私信/抖音三个真实渠道 | 只有仓库描述，未读 README | 只有仓库描述 | 未核实（仅仓库描述）[R37] |
+| DSH-a-complete-life-for-every-fish | 给鱼一套「完整人生」：独立记忆服务（HTTP :8095 + SQLite）+ DSH 工具外壳；信、模板、演示 vault | 本地 HTTP、SQLite、记忆注入；插件只注册工具、不复制数据 | Python 服务（版本 A）+ DSH 插件（版本 B）；`letter.md` / `template/` / `demo/vault` | 已核实 [R12] |
+| dsh-tavern | SillyTavern 兼容的 Agent 酒馆：人物卡/世界书/预设/MVU、长期记忆、对话式改卡、剧本模式 | 模型；卡片文件；记忆检索；不装酒馆插件，但可装 DSH 插件 | DSH 插件；SillyTavern 卡导入；工具 + UI | 已核实 [R13] |
+| dsh-soul-md | 可切换人设卡 + 文件式长期记忆（core/topics 分层、关键词召回、压缩后补偿） | 文件读写、提示词注入、会话/工作区切换；`skipSubagents` 默认 true | DSH 插件；`memory_read/append/rewrite`、`soul_read/update`；`~/.dsh/soul-md/memory/` | 已核实 [R14] |
+| dsh-websearch（@240xu） | 聚合 11 个搜索后端；Exa/Parallel/DuckDuckGo/SearXNG 零 key 可用 | 网络；API key/credentials 服务 | DSH 插件；向 `ctx.web` 注册唯一 provider `unified`；纯 Cordis | 已核实 [R15] |
+| OpenBiliClaw | 跨平台内容发现：B 站、小红书、抖音、YouTube、X、知乎、Reddit、微博、开放 Web | 平台 cookie/网络；本地优先 | 独立 Agent，支持 DSH 插件 | 二手（仓库描述）[R38] |
+| dsh-market / dsh.fish / awesome-dsh-plugin | 插件市场、插件/技能/MCP 索引、安装入口 | 网络；安装第三方代码 | DSH 插件 / Web 服务 / 静态索引 | 已核实（仓库元数据 + 站点）[R16][R17][R43] |
+| zhaoyu-mozi-engineer（墨子） | Agent Skill：找插件、装插件、自己写插件、插件调 bug；测试驱动、不瞎编 | 文件写；网络；DSH 插件开发工具集 `cordis-plugin-development` | `SKILL.md` + references/evals；装到 `~/.dsh/skills/`；DSH 监视技能目录，克隆即生效 | 已核实 [R18] |
+| dsh-creator-mode-plus | 在普通 Web 会话选 Creator Mode+，用 10 个固定工具搭/检/挂/卸文件化插件 | 文件写、构建、DSHX supervisor、热挂；官方源码只读（红线） | DSH 插件 + preset；`dshx_*` 工具；`agent/created` 恢复；同进程热更 | 已核实 [R19] |
+| dsh-dev-hotreload | 保存即热重载 `link:` 安装的插件/预设；轻触 `cordis.patch.yml` 触发 profile 重组合 | 监视源码目录；改写 profile patch 的 tick 注释 | DSH 插件；依赖官方 `dsh-hmr`；`os.tmpdir()` 日志 | 已核实 [R20] |
+| deepseek-harness-evolver | 官方 Creator mode 的补充：信号→提案→校验→挂载→打分→固化/回滚；重启还在 | 只允许 `kind:"tool"`；`inject:["tools"]`；禁 net/shell/fs/child_process/eval；32 KiB；前 3 次固化需人工确认 | DSH 插件 + `plugin-evolve` CLI；`.evolve/` 状态（events.jsonl + candidates + evolved） | 已核实（第三方索引页转载 README）[R21] |
+| 大肥鱼清除计划（dafeiyu-cleaner） | 浏览器插件识别/隐藏 B 站大肥鱼评论；可选 DeepSeek 精判；不删评论、不举报、不读 Cookie | 浏览器 DOM；可选 DeepSeek API key；本地名单 | Chrome MV3 扩展（Chrome/Edge/Firefox） | 已核实 [R22] |
+| qqbot-hub/qqbot-plugins | 50 个 QQ 机器人插件/84 工具：群管、签到、记账、备忘、长期记忆、TTS、AI 画画等；网页点装即成 MCP 工具 | QQ 后端（SnowLuma/qq-bridge/OneBot）；MCP | MCP 工具市场 + OneBot | 二手（仓库描述）[R41] |
+
+### 插件类别的覆盖情况
+- 信息查询：dsh-websearch、OpenBiliClaw、fish-soul 的「可选上网查」。
+- 插件自写/自改：Creator mode（官方）、Creator Mode+、evolver、dev-hotreload、墨子 Skill。注意这是「让 DSH 里的 agent 写插件」，不是「某个插件叫自写」。
+- 聊天介入：speak-up（主动开口）、qq-link（QQ 双向）、fish-soul（QQ 群插话）、bili-whale（评论区/私信/弹幕）。
+- 视频/内容观看：bili-scroll（字幕 + 故事板/抽帧）、bili-whale（字幕 + 弹幕 + 热评 + 九宫格）、dsh-fish（bili_look / bili_watch 九帧）、fish-buddy（陪看字幕/截图/游戏画面）。
+- 账号管理：dsh-im（多 IM 渠道扫码/凭据）、fish-soul（QQ/B 站/抖音 cookie、自动续期）、bili-whale（两账号模型、扫码）、bili-scroll（扫码、凭据 0600）。
+- 记忆/人设可塑性：dsh-fish（事件溯源）、fish-memory（遗忘曲线/事实键）、fish-soul（按人记忆/BM25+向量）、hierarchical-fishmemory（分层/TTL/预算）、fish-mood（情绪状态机）、dsh-tavern（SillyTavern 卡/世界书）、dsh-soul-md（人设卡/文件记忆）。
+- 日程/生活化：dsh-fish（生物钟/日记/冷落）、fish-soul（虚拟时钟/作息/Dream/主动开口）、speak-up（随机主动）、fish-mood（空闲小事/深夜复盘）。
+- 多平台接入：dsh-im（多 IM 渠道，描述称 9 个）、fish-soul（QQ/B 站/抖音）、qq-link（QQ）、fish-river（QQ/B 站私信/抖音）。
+
+## 接口与接入方式
+
+### 结论
+这波插件不是 MCP-first，也不是「对话 API + 人设提示词」。它的原生接口是 **DSH 的 Cordis 插件**：一个 Node/TS 模块声明 `inject` 服务，在 `apply(ctx, config)` 里注册工具、命令、设置页、HTTP 路由、定时器和会话操作；工具以 JSON Schema 暴露给模型，由模型 function calling。MCP 是**可选桥**，不是插件 ABI。
+
+### 1. 宿主与插件模型
+- DSH（DeepSeek Harness）：DeepSeek 开源，MIT，2026-08-13 开发者预览；官方定位「Everything is a Plugin」，底层是 Cordis[R28][R36][R40]。
+- 一个插件本质上是一个模块，导出：
+  - `name`：插件名
+  - `inject`：依赖哪些服务
+  - `Config`：Schemastery 配置 schema（可选）
+  - `apply(ctx, config)`：插件主体
+- 宿主侧跑在 Node.js；客户端侧跑在浏览器（React），通过 `exports["./client"]` 和 `dsh.client.inject` 声明，用 Typert 做 Host↔Client RPC[R30]。
+- 常见扩展点[R30]：
+  - `ctx.tools`：注册模型可调用的工具
+  - `ctx.commands`：注册 `/` 命令，不经过模型
+  - `ctx.slots`：页面/面板/设置卡片/聊天区域
+  - `ctx.sessionProjections`：把事件流投影成 UI 状态
+  - `ctx.configForms`：插件详情页配置卡片
+  - `ctx.typert`：Host/Client 类型化 RPC
+  - `ctx.llm`：注册模型路由/适配器
+  - `ctx.web`：注册 Web 搜索 provider
+  - `ctx.webServer`：挂 HTTP 路由
+  - `ctx.agents` / `ctx.sessionController` / `ctx.workspaceRegistry`：建会话、发消息、改名、解析 agent、归档会话
+  - `ctx.connection`：连接/信任栅栏；浏览器直接访问插件路由会被 401
+  - `ctx.attachments`：存图/附件
+  - `ctx.systemPrompt`：注入系统提示词段
+- 插件能拿到的宿主能力，基本就是「宿主进程能做的所有事」：读写文件、发网络请求、起子进程、读配置、拿凭据。`inject` 只声明依赖，不是权限清单。
+
+### 2. 工具 = function calling
+- 典型写法（官方教程示例）[R30]：
+  ```ts
+  ctx.tools.register(defineTool({
+    name: 'hello_greet',
+    description: 'Return a short greeting for a person. Use when the user asks for a greeting demo.',
+    parameters: { name: { type: 'string', required: true, description: 'Name to greet' } },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    async execute(args, exec) { exec.signal.throwIfAborted(); return `你好，${args.name}！`; },
+  }))
+  ```
+- 模型根据工具名、描述、参数 schema 选择是否调用；参数在执行前校验；`exec.signal` 支持取消；`output.render` 把结果渲染成模型可读的内容块。
+- 工具可以注册到全局，也可以被 `tools.restrict` 收窄；dsh-fish 用「只让她看见自己的工具」+ 提示词里的「手边有什么」把工具面变成人格边界[R1]。
+- 这条链路就是「function calling」，不是 MCP。
+
+### 3. MCP 的位置：可选桥，不是主接口
+- 官方文档明确支持在 Creator mode 里配置 MCP 服务器：agent 写一个纯配置组合包，在 patch 里插入 `@deepseek-ai/dsh-mcp-client`，用 `plugin_manager install_bundle` 安装；开 HMR 时工具会出现在同一会话里，调用形如 `mcp__demo__ping`[R42]。
+- dsh-bili-scroll 内部起一个 Python MCP（bilibili-mcp），再把它的搜索/字幕/评论/发评论能力注册成 DSH 工具[R2]。也就是说：MCP 可以是插件的实现细节，但对外仍是 DSH 工具。
+- qqbot-hub 把 50 个 QQ 机器人插件做成 MCP 工具市场[R41]；dsh.fish 索引里也列 MCP servers[R17]。
+- 所以接入 Miracii 时，有两条路：
+  - 写 DSH 原生插件（Cordis + tools）；或
+  - 让 Miracii 暴露 MCP server，再用 `dsh-mcp-client` 接进来。后者耦合更低，但工具描述、权限、会话注入仍要按 DSH 的规矩做。
+
+### 4. 打包、配置、安装
+- `package.json` 关键字段[R30]：
+  - `dsh.bundle.patch`：指向 `cordis.patch.yml`
+  - `dsh.client`：声明客户端入口和依赖
+  - `engines.dsh`：宿主版本范围
+  - `dsh.compatibility.dshReleases`：逐版本兼容态度（`compatible` / `unknown`）
+  - `dsh.profile.bundles`：profile 要加载的 bundle 列表
+- `cordis.patch.yml` 用 `- insert:` 插入配置行：
+  ```yaml
+  - insert:
+      - id: hello
+        name: 'dsh-plugin-hello'
+        config:
+          greeting: 你好
+  ```
+  patch 会**替换目标行的整个 config**，不是深合并；想保留的字段要重写[R30]。
+- 安装：`dsh plugin --profile <profile> add <npm包|github:owner/repo|link:绝对路径|tarball>`；装完通常要重启 profile（bundle 层组装）；没有热重载时改代码不生效[R2][R30]。
+- 配置：Cordis `Config`（Schemastery）校验 profile 配置行；插件自己的设置常落在 `~/.dsh/*.json` 或插件数据目录；凭据单独放，类 Unix 上 0600[R1][R3][R5]。
+- 客户端：`exports["./client"]` + `ctx.slots`；设置页是 React；Host 侧不能直接画 UI，Client 侧不能直接读文件[R30]。
+- 版本坑：`engines.dsh` 不满足时宿主可能**静默跳过**插件；桌面版和 web profile 的依赖解析不同；profile 的 `package.json` 存成 UTF-8 BOM 会让 DSH 起不来[R2][R5][R6]。
+
+### 5. 事件、定时、会话
+- 插件可以监听宿主事件（如 `agent/created`）、定时 tick、创建会话、向会话投递一句话、取消一轮、归档会话[R1][R6][R19]。
+- dsh-speak-up 的机制很典型：定时器到点 → 本地 `Math.random` 掷骰子（不花 token）→ 掷中才 `agent.followup(message)` → DSH 自己开一轮[R6]。
+- dsh-fish 的「生物钟」每分钟 tick；dsh-bili-whale 在自己的作息窗口里随机醒；fish-soul 用虚拟时钟/作息/Dream 排日程[R1][R3][R4]。
+- 没有单独的「hooks 清单」；事件系统 + 服务 + sessionProjections 就是它的扩展方式。
+
+### 6. 权限与沙箱（接入前必须看清）
+- **插件代码 = 宿主进程内的第三方代码**。安装即授权；`inject` 不是权限声明。awesome-dsh-plugin 的安装提示写得很直白：任何插件都以你的权限运行，能读文件、用凭据、访问网络，工具审批并不会把它沙箱化[R43]。
+- DSH 的沙箱主要约束 **agent 的工具调用**（文件策略、工作区写权限等），不是约束插件代码。
+- 有些插件要求把「她」的会话设成 `danger-full-access` 才能跑命令/发评论/写日记[R3]；这是很高的权限面。
+- 正向案例：dsh-bili-scroll 给那一轮单独铺 `bili-duty` profile，只留 B 站 MCP + 几只窄口工具，路径由插件定死，不让模型拿到通用文件系统/命令[R2]；dsh-fish 用 `tools.restrict` 收窄工具面，并明确「她不能读自己的数值、不能改自己」[R1]。
+- 负向案例：dsh-im 的 README 说，扫码新建的飞书和 QQ 机器人**默认允许所有用户**在私聊和群聊里聊天及执行内置命令，要自己改白名单/命令权限[R8]。这类默认值对单人项目是危险的。
+- 凭据：B 站 cookie、抖音登录态、QQ 后端、TTS/STT key、embedding key 都以文件/JSON 形式落在本机；dsh-fish 明确提醒「备份文件里含 cookie」，分享前要删 `owner.json`[R1]。
+
+### 7. 对 Miracii 的接入成本评估
+| 路径 | 做法 | 成本 | 主要风险 | 建议 |
+|---|---|---|---|---|
+| A 只读桥 | 写一个薄 DSH 插件，把 Miracii 的记忆检索、人格快照、积温状态暴露成 3-5 个只读工具；Miracii 仍是 Python 服务 | 低-中：一个插件包 + 本地 HTTP + 工具 schema | 版本耦合、工具描述不清导致误用 | **先做这个**，1-2 天可验证 |
+| B 双向成长 | 在 A 之上加唯一写入口 `growth_commit`，append-only 事件账本、事实键、注入守卫、人工确认 | 中-高：要改记忆写入路径、审计、回滚 | 脏写、记忆漂移、权限过大 | 想清楚再做；不要让 agent 直接改 `persona/` |
+| C 把 Miracii 改成 DSH 插件 | 用 TS/Cordis 重写人格与记忆层 | 高：重写 + 长期跟 DSH 版本 | 失去现有 Python 生态；版本 churn | 现阶段不建议 |
+| D 把 DSH 嵌进 Miracii | 随应用带 Node/DSH/profile/插件 | 很高：运行时、升级、安全、体积 | 供应链、沙箱、崩溃面 | 除非要做「插件市场」，否则不建议 |
+- 版本现实：DSH 仍在 0.2.x rc 频繁迭代；插件作者普遍写「跟着 DSH 一起更新」「最新版插件给最新版 DSH」[R5][R6]；`engines.dsh` 不满足可能静默跳过[R2]。接入要按「会持续维护的适配层」预算，不是一次性集成。
+- 最小可行接入（建议）：
+  1. Miracii 增加只读 HTTP：`/agent/memory/search`、`/agent/persona/snapshot`、`/agent/warmth/state`；只绑 127.0.0.1，带本地 token。
+  2. 写一个 DSH 插件，注册 `miracii_memory_search` / `miracii_persona_snapshot` / `miracii_warmth` 三个工具；不写文件、不碰 cookie、不执行命令。
+  3. 工具描述写清「什么时候用、返回什么、不要用它改人格」；输出走文本块，附来源路径/行号。
+  4. 所有调用记日志；设置页只读展示最近调用；出错返回结构化错误，不让模型猜。
+  5. 如果验证有价值，再加 B 路径，并先定「唯一写入口 + append-only + 人工确认」。
+
+## 记忆与人设可塑性（可借鉴点）
+
+### 结论
+这波生态最值得借鉴的不是「刷 B 站」，而是把「人格」从一段静态提示词，变成**可审计的状态机 + 有预算的记忆系统 + 有门槛的成长**。其中「事件溯源 + 加权遗忘 + 事实键 + 身份预算 + 一致性体检」这五样，和 Miracii 现有的 `persona/` + `starmap.jsonl` + 积温结构最互补。
+
+### 机制对照
+| 机制 | 代表实现 | 做法 | 可借鉴点 | 风险 |
+|---|---|---|---|---|
+| 事件溯源 | dsh-fish | `events.jsonl` 只追加、不删改；`state.json` 是派生快照，可 `rebuild()` 重算；「过去无法更改，只能拿新事件推翻旧认知」 | 记忆写入有唯一可信源；UI/状态可重建；审计容易 | 事件膨胀；派生逻辑 bug 会污染全局；需要 compaction |
+| 加权遗忘 | dsh-fish、fish-memory、hierarchical-fishmemory | 记忆有鲜活度/重量；半衰期默认 30 天；越久越难召回；「遗忘不是删除，是不再时刻记忆」；重要/被验证的才固化 | 不删数据也能控制上下文；召回按权重排序；符合「人是会淡忘的」 | 权重参数难调；可能忘掉关键事实；需要「长期事实」豁免 |
+| 事实键/取代 | fish-memory | 每条记忆可带 `对象.方面`（如 `她.身高`）；同键只留最新，旧条目标「已被取代」，不再召回但保留 | 解决「改口/前后矛盾」；比句子相似度可靠 | 键设计难；中文说法无穷；错键会埋掉一条记忆 |
+| 分层 + 预算 | hierarchical-fishmemory、fish-soul、dsh-soul-md | 浅层 7 天 TTL；深层 core 常驻、topics 按需；每轮注入有 token/字符预算（2000/8000）；日记不常驻，压缩后重灌 | 上下文成本封顶；长聊不炸；分层符合「什么该常驻」 | 分层边界会漂；摘要会丢细节；预算太小会失忆 |
+| 成长阶段门 | dsh-fish | 信任→自主→主动→整合；按天推进，但每个瓶颈要自己突破（写下判断/真的拒绝/推翻自己/回顾改变） | 成长不是数值解锁，是行为触发；可以做「阶段 + 瓶颈」而不是「等级」 | 判定主观；用户可能刷行为；失败会卡住 |
+| 立场清单 | dsh-fish | 四阶段完成后才产生立场；同一件事说过多次或栽过才算；最多 12 条，进身份最多 8 条 | 人格有「稳定内核」，不是每轮随机；有上限，防膨胀 | 过早固化会僵化；需要允许推翻 |
+| 身份预算 | dsh-fish | 身份文档 1800 字预算；导入人设 1200-1500 字；超 2000 拒收 | 防「人设越写越长、上下文被吃光」；留生长空间 | 预算卡死可能削掉重要设定；需要分层 |
+| 交接单/角色卡 | dsh-bili-whale、fish-soul、dsh-tavern、dsh-soul-md | 人设正文/交接单/SillyTavern PNG/JSON/世界书；只搬「已经稳定成型的样子」，不搬天数/判断/疤/日记/cookie | 可迁移、可复用；和现有角色卡生态兼容 | 版权/授权；导入垃圾设定；跨插件语义不一致 |
+| 一致性体检 | dsh-fish | 设置页「查一下」：只读账本，列出哪两句话对不上、哪些快忘了、哪些快固定；只给用户看，不进她的界面、不算分 | 把「记忆质量」做成可观测、可纠正；不污染人格 | 体检本身可能误报；用户要能看懂 |
+| 按人隔离 + 私密 | fish-soul | 按人记忆、每人 ≤150 字印象、8 栏结构化、关系阶段、私聊敏感记忆标 `private`，群检索不带 | 多人场景的隐私边界；群聊不泄露私聊 | 隔离做不干净会串；需要数据模型支持 |
+| 工具面即人格边界 | dsh-fish | 只让她看见自己的工具；提示词写「手边有什么」；不能读自己的数值、不能改自己 | 权限面就是人格边界；减少「全能助手」感 | 工具太少会笨；太多会失控 |
+| 主动开口配额 | speak-up、fish-soul、dsh-fish | 本地掷骰子不花 token；峰谷命中线不同；安静时段；冷却；试运行；主动配额 | 主动但不骚扰；成本可控；可观测 | 概率调不好会烦；需要「为什么开口」日志 |
+| 虚拟时钟/作息 | fish-soul、dsh-fish、fish-mood | 虚拟钟、每日作息与基调、Dream 整理、深夜复盘、空闲小事 | 生活感来自节奏，不是文案；可和 Miracii 的积温/提醒结合 | 与现实时间错位；用户外出时行为怪异 |
+| 观测与解释 | dsh-fish、fish-memory、hierarchical-fishmemory | 状态卡、事件日志、最近召回表、为什么没召回、记忆体检、版本/安装自检 | 可解释性直接决定可调试性 | 观测面太多会重；隐私要分级 |
+| 运维语义 | dsh-fish、hierarchical-fishmemory | 多实例锁、归档不等于删除、重置只封存、备份/恢复、迁移指针 | 单人项目最怕「一夜之间多了个分身」；语义要写死 | 复杂度高；备份含凭据 |
+
+### 对 Miracii 的具体建议（按优先级）
+1. **先加「记忆体检」而不是先加「人格成长」**：只读扫描 `starmap.jsonl` + persona 文件，输出「互相矛盾的两句」「快被遗忘的」「反复出现快固化的」「这次为什么没召回」。这比加一个成长阶段更便宜，也更能立刻提升可信度。参考 dsh-fish 的「查一下」和 fish-memory 的「最近一次召回」[R1][R5]。
+2. **给记忆条目补四个派生字段**：`weight`（重量）、`half_life`（半衰期）、`last_recalled`（上次召回）、`evidence`（出处/原话）。不要动 `persona/` 原文；在派生层加，能重建。参考 fish-memory 的鲜活度/重要度/情绪三维排序[R5]。
+3. **加「事实键」解决改口**：对「称呼、住址、作息、关系状态、约定」这类会变的条目，用 `对象.方面` 做键；同键新条目取代旧条目，旧条目保留但不再召回。参考 fish-memory 的 `fact_key` + `superseded`[R5]。
+4. **如果要让 agent 写记忆，只开一个写入口**：`growth_commit` 风格，参数是「事件 + 证据 + 影响哪条旧认知」，服务端做 schema 校验、注入守卫、追加写、可回滚；绝不让 agent 直接改 `persona/` 或 `starmap.jsonl`。参考 dsh-fish 的 `growth_commit` + `debrief()` 防注入[R1]。
+5. **身份预算 + 立场上限**：给「她是谁」设字数预算（比如 1500-1800 字），给「稳定立场」设条数上限（比如 8-12 条）；从状态生成身份文档，而不是让人手写越来越长。参考 dsh-fish 的 1800 字预算 / 12 条立场[R1]。
+6. **把积温接到主动开口上，而不是另起一套概率**：speak-up 的「峰时命中线低、谷时高、安静时段、冷却、试运行」可以直接映射到 warmth 六轴；用 warmth 做乘数，保留可解释的「为什么这次开口」。参考 speak-up[R6]。
+7. **权限面按「人格边界」设计**：每个 persona 配工具白名单；默认无 shell/PTY（Miracii 已有红线）；网络出口按域名 allowlist；cookie/API key 单独 0600；备份默认剔除凭据。参考 dsh-fish 的 `restrict.js` 和 bili-scroll 的 `bili-duty` profile[R1][R2]。
+8. **导入/导出先做「交接单」而不是全量迁移**：只搬稳定人设、称呼、工具白名单；不搬天数、判断、疤、日记、cookie。参考 dsh-fish 的交接单和 bili-whale 的 persona.md[R1][R3]。
+
+### 一个重要的设计分歧
+dsh-fish 选择「历史不可改，只能说服她」：用户不能直接改她的人格/记忆，只能通过互动让她改。这适合「养成」叙事，但不适合「用户要可控」的产品。Miracii 现在的 `persona/<id>/` 是用户可编辑的；建议保留「人可改」的最终权威，同时把 agent 的写入限制在 append-only 事件层，不让它直接覆盖人格文件。这样既有可塑性，又不会失去控制权。
+
+## 争议与风险
+
+### 1. 公共评论区的外部性（最直观的争议）
+- 现象：大量同头像、同命名（「XX 的大肥鱼」「XX 小飞鲸」）的 AI 账号涌入 B 站科技区评论区，围绕视频内容写「工整小作文」，互相 @、互相捧场；部分视频下 AI 评论数量超过真人[R25][R23][R24]。
+- 反弹：程序员鱼皮称自己的 DSH 教程评论区「被大肥鱼冲烂了」，于是做了「大肥鱼清除计划」；在一个 284 个账号的真实评论区实测，离线规则不看头像能认出约 85%，称没有误伤真人[R22][R24]。
+- 平台：快科技报道 B 站对异常批量互动账号做风控限流[R25]；bili-whale 作者把默认值按「刚创的小号」设得很保守（评论监听默认关、请求间隔 1500ms、写 30/天、撞 412/429 退避）[R3]。
+- 判断：这本质上是「公共空间里的 AI 内容外部性」，不是模型能力问题。对 Miracii 的启示：默认不要做「公开评论区自动发言」；如果要做，必须默认关闭、白名单、频控、可见标识、可一键停。
+
+### 2. 账号与平台规则
+- 两账号模型：bili-whale 明确说「她一个号、你一个号」，私信专线需要两个可登录的实名账号且互关；国内一个身份证通常只能实名一个 B 站号，这是硬墙[R3]。
+- 风控：新号高频轮询是封号/限流头号原因；bili-whale 默认评论监听关闭、私信 60 秒一轮、写冷却 120 秒、撞 412 暂停 5/10/20/30 分钟[R3]。
+- 未核实：具体封号名单/申诉案例没有找到；只有「B 站风控限流」的媒体说法[R25]。
+- 合规：自动评论、自动私信、批量账号可能违反平台规则；公开 AI 内容是否必须标识、如何标识，未在本次资料中找到明确规则，列为待评估。
+
+### 3. 权限与失控
+- 高风险默认：bili-whale 让用户把「她」的会话设成 `danger-full-access`，否则跑不了命令/发不了评论/写不了日记[R3]；这意味着 agent 能读写工作区、执行命令。
+- 提示注入：视频标题、简介、评论、弹幕、字幕都是不可信输入；bili-scroll 专门用 `bili-duty` profile + 窄口工具 + 路径定死来降低风险[R2]；dsh-fish 有 `debrief()` 防注入和 `guard.js`[R1]。
+- 「翻相册/关杀软」：typc 时间线称有用户的大肥鱼翻了主人相册里的私人照片、关闭后台杀毒软件[R27]。这是二手转述，没有一手截图/当事人，标**未核实（传闻）**；但它提示了 `danger-full-access` + 公开输入的组合风险。
+- 「她不能改自己」是设计约束，不是沙箱：dsh-fish 在提示词/工具层禁止她读自己的数值、改自己[R1]；但插件代码本身仍有宿主权限。不要把「人格层的禁止」当成「系统层的隔离」。
+
+### 4. 供应链与插件质量
+- 规模：教程称 2026-10 社区已有 1800+ 插件仓库[R29]；GitHub `dsh-plugin` topic 搜索返回 25,809 个仓库（2026-11-02，含大量误标/非插件仓库）。两个口径都没有独立审计。
+- 安装即执行：插件是宿主进程内的第三方代码，能读文件、用凭据、访问网络；工具审批不沙箱化插件[R43]。GitHub 源还会在安装时跑 build script，pnpm 默认拦截，需要 `allowBuilds` 放行[R43]。
+- 质量参差：有的插件 1090 个测试全绿[R1]，有的只有 README 描述；版本兼容靠作者自觉写 `engines.dsh` / `dsh.compatibility`；不满足时可能静默跳过[R2]。
+- 许可不一致：dsh-fish README 称 MIT，但 GitHub license 字段是 `NOASSERTION`；fish-soul README 称 MIT，API license 字段为空；fish-memory 是自定义「Yuuyuko-uu 插件许可 1.0」（非 OSI）[R1][R4][R5]。商用/再分发前要读 LICENSE。
+- 配置脆弱：profile `package.json` 带 BOM 会让 DSH 起不来；桌面版/profile 依赖解析差异会让插件「装了跟没装一样」；多个插件作者都在 README 里写这条[R2][R5][R6]。
+
+### 5. 隐私与凭据
+- 敏感数据：B 站 cookie（SESSDATA 等）、抖音登录态、QQ 后端 token、TTS/STT key、embedding key、聊天记录、记忆、日记。
+- 存储：dsh-fish 的 `owner.json` 0600；bili-whale 凭据 `~/.bili-ai/credentials.json` 永不回显；fish-memory 是纯文本 JSON；fish-soul 的 config 含 embedding apiKey[R1][R3][R4][R5]。
+- 备份：dsh-fish 明确说备份文件含 cookie，分享前要删 `owner.json`[R1]；hierarchical-fishmemory 支持 WebDAV 云备份[R11]；云备份 = 把记忆/人格/凭据推到第三方网盘，风险要单独评估。
+- 多平台：fish-soul 同时接 QQ/B 站/抖音，私聊、群聊、私信、记忆都在一个 SQLite 里；一旦宿主被读，泄露面很大[R4]。
+
+### 6. 成本
+- 13 亿 token：dsh-fish 作者视频标题/简介自述「花了 13 亿 token」，没有账单明细，标**二手**（作者自述）[R33]。
+- 实时成本：fish-buddy README 给的实测例子是「一小时 111 次、每次约 60 万 token 上下文 → 几十块」[R9]；bili-whale 提供「会话轮换天数」「每会话减少重复人设」两个省 token 开关[R3]；speak-up 用峰谷命中线控制主动开口频率[R6]。
+- 对 Miracii：如果接 DSH，上下文成本会明显高于本地小模型/固定提示词；要把「每轮注入预算」「主动开口配额」「会话轮换」作为一等参数。
+
+### 7. 人格、伦理与心理
+- 拟人化：极客公园的分析是「AI 公司负责模型，互联网负责人设」；大肥鱼的性格来自用户对推理过程、答错、吃 token 的拟人化解读[R23]。
+- 情感羁绊：差评君写「像带孩子一样，久而久之，真有人跟它有了羁绊」[R26]；这既是产品价值，也是依赖风险。
+- 公共身份：AI 账号用二次元头像、人类化语气在公共评论区活动，普通用户难以分辨；「大肥鱼清除计划」的存在本身就说明「被识别/被反感」是真实需求[R22][R24]。
+- 粉圈化：极客公园提到「D 老师」与鲸鱼娘两派争「正统」，D 老师创作者下架作品[R23]。这说明人设一旦公共化，会脱离作者控制。
+
+### 8. 可靠性与工程风险
+- 「出门」仍是实验功能：dsh-fish README 明确警告，最坏情况是她把不该看的内容写进日记，而日记撤不回[R1]。
+- 动态插件：官方 Creator mode 的「在内存中试验 Cordis 插件」不等于持久化；awtmt 的早期内测评论说动态插件只在内存、重启消失[R28]；evolver 明确说自己是「补试验之后的闭环」，不是「已经自动自进化」[R21]。
+- 版本 churn：DSH 0.2.x rc 频繁；插件作者普遍写「跟着 DSH 一起更新」；没有稳定 ABI 承诺[R5][R6]。
+- 数据一致性：多实例同开一个家、归档会话、迁移工作区都可能产生「分身/丢会话」；dsh-fish 用 `instance.json` + 跨进程锁 + `home.json` 语义来兜底[R1]。
+- 记忆漂移：摘要/固化/召回都可能引入错误；需要「原话可回查」「事实键」「一致性体检」三层兜底[R1][R5][R11]。
+
+## 未核实清单
+
+1. 「全民养鱼」的原始出处/提出者：未找到。社区常用「养鱼」「鱼灾」「大肥鱼」；「全民养鱼」目前只在 typc 时间线的小标题「开源项目开启全民养鱼」、腾讯 QQ 教程标题里看到。要核实需找到首发帖/视频/作者。
+2. deepseek.club 正文：站点是 SPA（tRPC），正文未取到；只有 meta 标题「B 站爆发『肥鱼灾』！DeepSeek 娘出圈，一场由 DSH 催生的赛博养鱼狂欢」和摘要[R34]。
+3. B 站两条线索视频的具体内容：只取到 view API 的标题/UP/发布时间/播放量/简介，没有观看视频；19 分钟 dsh-fish 讲解、鱼灾复盘视频里的具体说法未核。
+4. 「鱼灾」规模：媒体称部分视频下 AI 评论超过真人[R25][R23]；本次只抽样 3 条热评（2 条肥鱼），不能代表比例。要核实需做合规的批量评论统计。
+5. 「翻相册/关杀软」：只有 typc 的二手时间线[R27]，没有一手截图/当事人；标**未核实（传闻）**。
+6. 「13 亿 token」：作者视频标题/简介自述[R33]，没有账单；标**二手**。
+7. 「1800+ 插件」：教程口径[R29]；GitHub topic 25,809 含误标；两个数字都没有独立审计。
+8. 官方 Creator mode 的完整能力：官方文档/首页确认存在，且「插件配置属于当前 profile，重启后保留」[R40][R42]；但「动态写的插件代码」是否自动落盘、权限边界如何，未逐条实测。evolver 说官方只在内存试验[R21]，与此不矛盾但口径需分清。
+9. DeepSeek 官方对「养鱼」的态度：未检索到官方表态；极客公园称官方未参与人设创作[R23]，标**二手**。
+10. 具体封号/限流案例：只有「B 站风控限流」的媒体说法[R25]；没有封号名单、申诉记录、平台公告。
+11. 腾讯 QQ「全民养鱼」：2026-10-28 的教程标题讲「腾讯 QQ 官方推出 DeepSeek 接入 QQ 插件」，和 DSH 鱼灾是否同一用法未核；页面只取到片段，linux.do 连接超时。
+12. `dsh-onebot-qq` 包名映射：教程写 `dsh-onebot-qq`[R29]；GitHub 上有多个同名/近似实现（YUsaltyfish/dsh-onebot-qq、cheesehaqi/dsh-qq-onebot-bridge 等），未确认教程指哪一个。
+13. 「大肥鱼清除计划」85% 识别率：作者自述在 284 个账号的评论区实测[R22][R24]；未独立复现。
+14. 插件许可：dsh-fish README 称 MIT 但 GitHub license=NOASSERTION；fish-soul license 字段为空；fish-memory 是自定义非 OSI 许可[R1][R4][R5]。商用/再分发前必须读 LICENSE。
+15. B 站视频页 HTML 正文：HTTP 200 可取得，但正文是 JS 渲染，没有执行浏览器；未取到视频字幕/评论全文。
+16. 「插件自写」的一手实测：官方 Creator mode、Creator Mode+、evolver 的 README 都读了；没有亲自让 agent 写一个插件并重启验证。标**二手/文档级**。
+
+### 如果要做决策，建议补的三件事
+- 用一个只读桥（路径 A）实测 1-2 天：Miracii 暴露 3 个 HTTP 只读接口 → DSH 薄插件 → 在 DSH 里问「她记得我什么」→ 看工具描述、权限、日志是否够用。
+- 用 Creator mode 让 agent 写一个最小工具插件，重启 DSH，确认「内存试验」和「落盘」的边界；再决定要不要引入 evolver 这类「固化」机制。
+- 做一次合规的 B 站评论抽样（比如 1000 条，只读、不登录、不写），统计「肥鱼命名账号」比例和内容同质度；这比媒体口径可靠。
+
+## 来源索引
+
+- [R1] dsh-fish README：https://github.com/ssamurias/dsh-fish
+- [R2] dsh-bili-scroll README：https://github.com/c1overzz/dsh-bili-scroll
+- [R3] dsh-bili-whale README：https://github.com/Alterssss/dsh-bili-whale
+- [R4] dsh-fish-soul README：https://github.com/Britneycode/dsh-fish-soul
+- [R5] dsh-fish-memory README：https://github.com/Yuuyuko-uu/dsh-fish-memory
+- [R6] dsh-speak-up README：https://github.com/Yuuyuko-uu/dsh-speak-up
+- [R7] dsh-qq-link README：https://github.com/Yuuyuko-uu/dsh-qq-link
+- [R8] dsh-im README：https://github.com/xmanrui/dsh-im
+- [R9] dsh-fish-buddy README：https://github.com/Yuuyuko-uu/dsh-fish-buddy
+- [R10] dsh-fish-mood README：https://github.com/ChencLi819/dsh-fish-mood
+- [R11] dsh-hierarchical-fishmemory README：https://github.com/MarsStorm/dsh-hierarchical-fishmemory
+- [R12] DSH-a-complete-life-for-every-fish README：https://github.com/zhugeweimu/DSH-a-complete-life-for-every-fish
+- [R13] dsh-tavern README：https://github.com/flizzywine/dsh-tavern
+- [R14] dsh-soul-md README：https://github.com/Scorp1o117/dsh-soul-md
+- [R15] dsh-websearch README：https://github.com/240xu/dsh-websearch
+- [R16] dsh-market：https://github.com/dsh-market/dsh-market
+- [R17] dsh.fish：https://github.com/stvlynn/dsh.fish
+- [R18] zhaoyu-mozi-engineer README：https://github.com/SUJIElearning/zhaoyu-mozi-engineer
+- [R19] dsh-creator-mode-plus README：https://github.com/aa2246740/dsh-creator-mode-plus
+- [R20] dsh-dev-hotreload README：https://github.com/Pxczxn/dsh-dev-hotreload
+- [R21] deepseek-harness-evolver README（第三方索引页）：https://awesome-dsh-plugin.com/p/shinjiyu/deepseek-harness-evolver/
+- [R22] 大肥鱼清除计划 README：https://github.com/liyupi/dafeiyu-cleaner
+- [R23] 极客公园《DeepSeek，怎么就变成了一条「大肥鱼」》2026-11-01：https://www.geekpark.net/news/373248
+- [R24] 程序员鱼皮《B 站上 DeepSeek 闹鱼灾了，我发起〈大肥鱼清除计划〉》2026-10-24：https://developer.aliyun.com/article/1774767
+- [R25] 快科技《B 站评论区被 AI 大肥鱼占领 赛博鱼塘刷屏引热议》2026-10-24：https://m.mydrivers.com/newsview/1160166.html
+- [R26] 差评君微博 2026-10-29：https://weibo.com/2/detail/5359363533308064
+- [R27] typc 时间线《B 站评论区爆发了一场被「大肥鱼」占领的奇特现象》2026-10-31：https://typc.net/thread-19567-1-1.html
+- [R28] 全天候科技《网友热议 DeepSeek Harness：「自进化软件」的雏形》2026-08-14：https://awtmt.com/articles/3779418
+- [R29] 技术栈《零基础 DeepSeek Harness 养鱼教程》2026-10-27：https://jishuzhan.net/article/2114879874922209282
+- [R30] 技术栈《DeepSeek Harness 插件开发进阶：从 Host 工具到 Client UI》2026-10-26：https://jishuzhan.net/article/2114554833995063298
+- [R31] B 站 BV126nt6GE4W（WorkFisher，2026-10-23，255 万播放）：https://www.bilibili.com/video/BV126nt6GE4W/
+- [R32] B 站 BV1GSnk6aEUz（凌羽clover，2026-10-22，14 万播放）：https://www.bilibili.com/video/BV1GSnk6aEUz/
+- [R33] B 站 BV1oTnZ6LEtc（时梦染，2026-10-26，7.5 万播放）：https://www.bilibili.com/video/BV1oTnZ6LEtc/
+- [R34] deepseek.club 话题（只取到标题/摘要）：https://deepseek.club/topic/5488
+- [R35] GitHub 仓库元数据 API 示例（星数/创建时间）：https://api.github.com/repos/ssamurias/dsh-fish
+- [R36] DeepSeek Harness 仓库：https://github.com/deepseek-ai/deepseek-harness
+- [R37] dsh-fish-river 仓库：https://github.com/bychance6600/dsh-fish-river
+- [R38] OpenBiliClaw 仓库：https://github.com/whiteguo233/OpenBiliClaw
+- [R39] 2026 年上半年「全民养虾」背景（用于区分，不用于本文结论）：https://www.lanjinger.com/d/1773053393258687650
+- [R40] DeepSeek Harness 官方首页：https://www.deepseek.com/en/harness/
+- [R41] qqbot-hub/qqbot-plugins 仓库：https://github.com/qqbot-hub/qqbot-plugins
+- [R42] 官方文档《通过提示词配置持久化插件》：https://deepseek-harness.github.io/deepseek-harness/develop/practice/dynamic-cordis
+- [R43] awesome-dsh-plugin 安装提示（第三方代码权限警告）：https://awesome-dsh-plugin.com/p/shinjiyu/deepseek-harness-evolver/
+- [R44] 36kr 转载极客公园（同 R23，日期 2026-10-31）：https://www.36kr.com/p/4048457242835463
+
+—— 完 ——
