@@ -1,0 +1,79 @@
+# 参考资料落库：DSH 智能体框架机制说明
+
+- 日期：2026-11-12
+- 作者：DSH（DeepSeek Harness agent）
+- 关联提交：未提交
+- 风险等级：T0（纯新增文档 + 索引补一行；不改任何代码、配置、数据）
+- 关联设计文档：[docs/reference/agent-integration.txt](../reference/agent-integration.txt)（既有拓扑讨论稿，本文是它的机制底稿）
+
+## 规格与验收（T0 从简）
+
+- 用户可见行为：`docs/reference/` 新增一份可直接查阅的 DSH 框架机制说明；索引表补一行。
+- 非目标（这次不做）：不改 Miracii 代码；不做拓扑决策；不实现 `/api/agent/*`；不碰 `persona/`。
+- 不变量：所有结论必须带「已核实（文件:行 / URL）」或「未核实」；不臆造实现细节；找不到就写「未找到」。
+- 验收断言：文件存在、7 个规定小节齐全、`已核实` 与 `未核实` 两种标记都出现、行号引用均可回溯到本机 asar。
+
+## 背景
+
+人要求弄清 **DSH 的 agent 框架本身**，产出一份"如何从对话 API 升级成 agent 框架"的机制说明，
+供 Miracii（Python/FastAPI）对照设计。既有 `agent-ecosystem.txt` 讲的是**生态与插件**，
+`agent-integration.txt` 讲的是**拓扑取舍**；缺一份"DSH 自己到底怎么跑起来"的第一手机制说明。
+
+## 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `docs/reference/dsh-agent-architecture.txt` | 新增：7 节机制说明（六处差别 / turn 执行序列 / 服务与工具接口 / 提示词拼装 / 权限审批 / Python 对照 checklist / 未核实清单） |
+| `docs/reference/README.txt` | 索引表补一行 |
+
+**取证方式**（写进文首"取证与引用约定"）：
+
+- 一手资料是本机只读安装包 `D:\DSHarness\resources\app.asar`。它是 asar 归档，不是目录；
+  本次用脚本解析其头部（`[4B=4][4B 外层 size][4B 内层 size][4B json 长度][json][数据区]`），
+  解出所需 `@deepseek-ai/dsh-*` 包到临时目录阅读。**未修改安装包**。
+- 版本钉住：`@deepseek-ai/dsh-agent-loop` 0.2.1-rc.5（宿主 44.7.0）。所有行号只对这一版成立。
+- 包内只有编译后的 `lib/index.js`（bundle）与 `README.zh.md`，**没有 `src/*.ts`**；
+  因此 README"源码地图"里列的 `src/agent.ts` 等文件在本机不存在，文中一律引 bundle 的真实行号。
+- 网络只补了官方文档站 4 页（basic / publish / framework-service / subsystems-core）。
+
+## 验证
+
+```powershell
+$p='docs\reference\dsh-agent-architecture.txt'
+(Get-Item $p).Length                                  # 41200
+(Get-Content $p -Encoding UTF8).Count                 # 563
+((Get-Content $p -Encoding UTF8) | Select-String '^## ' | Measure-Object).Count   # 8（含"取证与引用约定"）
+((Get-Content $p -Encoding UTF8) | Select-String '未核实' | Measure-Object).Count  # 20
+((Get-Content $p -Encoding UTF8) | Select-String '已核实' | Measure-Object).Count  # 97
+# 无 BOM：首字节 35 32 68（= "# D"）
+```
+
+**注意一个坑**：`Get-Content` 不加 `-Encoding UTF8` 时，本机（CP936 控制台）会把这份 UTF-8 文件
+按 GBK 解码，行数被算成 **380**（把部分换行字节吞进多字节序列），小节统计也随之错。复核时务必带编码参数。
+
+关键行号抽样复核（同一命令可重跑）：
+
+```powershell
+# 在解出的包里核对 5 个锚点字符串，行号应与文中一致
+$f='<临时目录>\@deepseek-ai\dsh-agent-loop\lib\index.js'
+Select-String -Path $f -Pattern 'turn/start|step/start|request/header|tool/result|turn/end'
+# 实测：945(turn/start) 970(step/start) 1226(request/header) 697(tool/result) 1029(turn/end)
+```
+
+**未验证**：没有跑 DSH 本身（不启动新服务、不装插件）；没有逐页读官方子系统文档；
+"完整服务清单"只覆盖本次解出的 ~35 个包（asar 内 `@deepseek-ai/*` 共 307 个）。
+
+## 风险与未决
+
+- **行号会随 DSH 升级失效**：`lib/index.js` 是 bundle，升级即整体漂移。文末"维护提示"给了一条
+  5 个锚点字符串的复核办法。
+- **`docs/reference/README.txt` 的索引本来就不全**：`agent-direction.txt`、`agent-integration.txt`、
+  `agent-ecosystem.txt` 三份既有文件也不在索引表里。本次只补了新增这一行，**没有替别人补**——
+  要不要一次补齐，等人拍板。
+- **"安装即授权"只找到一处官方表述**（`publish.md` 的"构建脚本这道坎"）：指安装期跑 `prepare`
+  等于让包代码在宿主进程里执行、且不在 agent 沙箱内。没有检索全部文档确认这是唯一口径。
+- 本文是**输入**，不是结论；拓扑与能力阶梯仍以 `agent-integration.txt` 为准。
+
+## 复核
+
+（留空。由另一个 agent 追加：意见 + 提出者 + 日期。作者随后用「回应：」逐条答复。）

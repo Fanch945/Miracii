@@ -1,0 +1,563 @@
+# DSH 智能体框架机制说明：从对话 API 到 agent 框架
+
+- 日期：2026-11-12
+- 作者：DSH（DeepSeek Harness agent），受 Miracii 委托
+- 用途：给 Miracii（Python/FastAPI）对照设计用。只讲**机制**，不替 Miracii 做拓扑决策；
+  拓扑与账号能力阶梯见 [agent-integration.txt](agent-integration.txt)（既有讨论稿）。
+- 一手资料：本机安装的 DSH 应用包 `D:\DSHarness\resources\app.asar`（只读，未修改）。
+  `app.asar` 是打包归档，本次用脚本解析其头部后解出所需 `@deepseek-ai/dsh-*` 包到临时目录阅读。
+
+## 取证与引用约定
+
+- 版本钉住：`@deepseek-ai/dsh-agent-loop` 为 **0.2.1-rc.5**（`dsh-agent-loop/package.json`），
+  宿主应用版本 44.7.0（`D:\DSHarness\version`）。**下面所有 `文件:行` 都是这一版的行号**，升级后需重核。
+- 简写：`dsh-X/lib/index.js:123` 指
+  `app.asar → dsh/node_modules/@deepseek-ai/dsh-X/lib/index.js` 第 123 行；
+  同名 `.md` 指该包的 `README.zh.md` 第几行（官方中文包文档，随包发布）。
+- 标记：
+  - **已核实（位置）**：本次直接读到了源码或官方原文。
+  - **未核实**：只有推断或二手；**未找到**：明确查过没有。
+- 重要限制：这些包**只带编译后的 `lib/index.js`（bundle）与 README，不带 `src/*.ts`**。
+  所以 README 里"源码地图"提到的 `src/agent.ts` 等文件在本机不存在，本文一律引 `lib/index.js` 的真实行号。
+- 网络补充只用了官方文档站 4 页：`/develop/basic/`、`/develop/basic/publish`、
+  `/develop/framework/service`、`/reference/subsystems/core`（URL 见对应小节；正文引的是这些页
+  的 `.md` 原文视图，即页面右上"以 Markdown 格式查看"那一份）。
+
+---
+
+## 一句话：agent 与 chat 的真实差别
+
+不是"多了几个工具函数"，而是**六件事同时变了**；缺任何一件，剩下的都会退化成"一次性问答 + 装样子"。
+
+| # | 变了什么 | 对话 API | agent 框架 | 本机 DSH 的落点 |
+|---|---|---|---|---|
+| 1 | **控制流归属** | 调用方决定何时再问 | 模型自己决定还要不要再要工具 | `while (await this.turn())`（已核实 dsh-agent-loop/lib/index.js:889） |
+| 2 | **状态的真源** | 内存里的 messages 数组 | **只追加事件日志**，messages 由日志派生 | `session.deriveMessages()`（已核实 dsh-session/README.zh.md:42；调用点 dsh-agent-loop/lib/index.js:1274） |
+| 3 | **工具结果回灌** | 无 | 每个 tool call 必须落一条配对结果，且按**模型顺序**提交 | `appendToolCall/appendToolResult`（已核实 dsh-agent-loop/lib/index.js:681, 691；顺序提交 565-575） |
+| 4 | **提示词** | 一次性拼好 | **每步重新组装**（段 + 变量 + 工具 schema 同一处产出） | `systemPrompt.assemble()`（已核实 dsh-agent-loop/lib/index.js:907） |
+| 5 | **权限** | 无 | 每次工具调用过策略闸门；危险操作等人 | 五段流水线 + `approval` 服务（已核实 dsh-tools/README.zh.md:109） |
+| 6 | **失败恢复** | 报错即结束 | 工具失败变成模型可见的错误结果，轮次继续；崩溃后补齐"结果未知" | `TOOL_OUTCOME_UNKNOWN` / `TOOL_NOT_STARTED`（已核实 dsh-session/README.zh.md:171） |
+
+**最容易低估的两点：**
+
+- 第 2 点决定了第 6 点。因为历史是**派生**的，"崩溃后补一条错误结果"只是往日志追加，不需要回滚内存里的对话数组。
+  DSH 的 `Session` 明确是"唯一真源"，模型可见即已记录（已核实 dsh-session/README.zh.md:100）。
+- 第 4 点不是"模版字符串"。DSH 里**工具 schema 与系统提示词是同一次组装的产物**
+  （"模型获知自己能做什么"是一个整体，尽管 wire 上分两个字段）——已核实 dsh-system-prompt/README.zh.md:100。
+
+一个反直觉的结论：**DSH 没有内置轮次预算**。"工具调用或 steering 会让当前轮次继续；限制失控轮次的策略必须从
+`agent/turn-stopping` 等既有扩展点执行取消"（已核实 dsh-agent-loop/README.zh.md:220）。
+也就是说"最大步数"是**部署方**的责任，不是框架默认帮你兜的安全网。
+
+---
+
+## 一次 agent turn 的执行序列
+
+下面每一步都标了源码位置；标"未核实"的是推理链而非直接读到的语句。
+
+### 0. 入队与唤醒（谁把消息塞进去）
+
+- 三个入口，落点不同（已核实 dsh-agent-loop/lib/index.js:804-813）：
+  - `followup(msg)` → `send(msg, 'next-turn', true)`：排一个**独立轮次**并唤醒。
+  - `steer(msg)` → `send(msg, 'next-step', true)`：排到**下一步**边界（模型中途可收到）。
+  - `inject(msg)` → `send(msg, 'next-step', false)`：只排**上下文**，不唤醒。
+- `send()` 在 `wakeup` 为真时调 `wakeDriver()`（已核实 :804）；后者占用 `running` phase、
+  在 `ctx.agents.withInitiator(agent, ...)` 里调 `kick()`（已核实 :854-868）。
+- `withInitiator` 的作用：给这段异步链一个"当前是哪个 agent 在干活"的进程内归因，
+  **不构成授权、也不证明存活**（已核实 https://deepseek-harness.github.io/deepseek-harness/reference/subsystems/core.md ，
+  "发起 Agent"一节）。
+
+### 1. 开轮次（turn）
+
+- `kick()`：`while (await this.turn())`（已核实 :887-889）。turn 返回 false 就停。
+- `turn()` 第一件事是 `session.append('turn/start', { turn })`（已核实 :945）——
+  **轮次边界是持久事件，不是内存状态**。
+- 轮次内循环步骤：`preStep` → 可能 reject → `step/start` → `step()` → `step/end`（已核实 :953-1007）。
+
+### 2. pre-step：客户端不可见的第一个拦截点
+
+- `this.inbox.claim(target, position.turn)` 原子领取待处理输入（已核实 :906）。
+- `await this.loopCtx.systemPrompt.assemble(...)` 组装提示词（已核实 :907）。
+- `agent/pre-step` waterfall：监听器可 `reject` 或改写进入本步的消息（已核实 :909-920；
+  类型定义见 core 文档 "拦截决策"节）。
+- **空首批输入不打开步骤**：`if (phase.step === 0 && decision.messages.length === 0) → completed`（已核实 :965-968）。
+- reject 时轮次以 `blocked` 收尾（已核实 :960-962）。
+
+### 3. 请求组装（模型看到的东西是怎么来的）
+
+按顺序（都在 `step()` 内，已核实 dsh-agent-loop/lib/index.js:1043-1078）：
+
+1. `prepareRequest()`：跑 `agent/request` waterfall 取路由（:1191），再调 `llm.prepareCall()`
+   校验适配器并解析默认值（:1201）；两者都没有 `provider/model` 就直接抛错（:1197）。
+2. `systemPrompt.project(...)` 把渲染后的提示词同步进 `system/message` 表面节点（:1057-1065）。
+3. 追加 `user/message`（运行时上下文快照 + 已领取消息，:1067-1073）。
+4. `buildRequest()`（:1214-1288）：
+   - 归一化 header `{config, adapterDefaults, tools}`，必要时 `session.append('request/header', ...)`
+     （:1217-1240）；
+   - 工具增删合成一条 `developer/message`（:1242-1259）；
+   - `const boundaryMessages = session.deriveMessages()`（:1274）；
+   - 深冻结 header 与每条消息（:1273-1280）；
+   - 返回的请求对象是 `{...config, messages, toolHistory, tools, sessionId, signal}`（:1281-1288）。
+
+**注意：请求里没有 `system` 字段。** 系统提示词就是 `messages[0]` 的 `system/message` 节点
+（已核实 dsh-agent-loop/README.zh.md:120；dsh-session/README.zh.md:58）。
+
+### 4. 流式回复与落账
+
+- `llm.stream(request)` 逐 chunk 迭代，每 chunk 先 `signal.throwIfAborted()`（已核实 :1084-1091）。
+- 成功：`session.append('assistant/message', ...)`（:1156）；`max-tokens` 直接收尾（:1163）。
+- 失败：先落一条 `assistant/attempt`（不产生模型历史），再分发 `agent/request-error`（:1131-1146）；
+  监听器返回 `{kind:'retry'}` 就 `continue` 重试（:1146）。
+- 取消：把**已经流给用户的文本**落成带 `interrupted: true` 的 assistant 消息（:1096-1112）——
+  模型下一轮看到的就是用户实际看到的内容（已核实 dsh-agent-loop/README.zh.md:120）。
+
+### 5. 工具调度（本机实现里最值得抄的一段）
+
+- `executeToolCalls(...)`（:1166）→ `runGroup(...)`（:551）：
+  - 并行安全调用进**有界滚动池**，上限 `maxParallelToolCalls`（默认 10，已核实 :553、:1297）；
+  - **独占调用是排序屏障**：并行池里遇到非 parallel 的调用就 break（:621）；而如果本组第一个调用就是
+    独占的，直接以单元素组调用 `runGroup`（:524）。模块头注释把这条写成"exclusive calls form barriers"（:476）。
+  - 先 `appendToolCall` 再 `prepare`/`dispatch`（:580-596）。
+- 结果**必须按模型顺序提交**：`commitReady()` 只提交"下一个还没提交但已就绪"的槽（已核实 :565-575）；
+  每个结果落 `tool/result` 并引用其 `tool/call` 的 seq（:691-705）。
+- 取消时：已开始的等它结束，未开始的批量补 `ABORTED_BEFORE_DISPATCH` 结果（已核实 :646-679）。
+- 工具失败**不结束轮次**：未知工具/抛异常都变结构化错误（`UNKNOWN_TOOL`），只有中间件/策略自身的
+  失败才会关轮次（已核实 dsh-tools/README.zh.md:126；dsh-agent-loop/README.zh.md:128）。
+
+### 6. 收敛或继续
+
+- 没有 tool-call → `{kind:'completed'}`（:1165）；有 → 返回 `null` 表示"还要一步"。
+- 还有 pending 输入就不关轮次；`turn()` 最后 `if (!this.inbox.hasPending) return false`（:1037）。
+- 轮次关闭前跑 `agent/turn-stopping`（serial，可被监听器"再说一句"改写结局，:1001-1006）。
+- 收尾：`session.append('turn/end', { turn, reason })`（:1029），reason 是
+  `completed | blocked | aborted | error | max-tokens` 之一（:961/966/1013/1019/1163）。
+
+### 7. 失败与崩溃恢复（同一条链）
+
+- 失败步骤关闭前，遍历"有 call 无 result"的调用补结果：有 call 记录 → `TOOL_OUTCOME_UNKNOWN`，
+  没有 call 记录 → `TOOL_NOT_STARTED`（已核实 dsh-agent-loop/lib/index.js:975-990、
+  dsh-agent-loop/README.zh.md:130、dsh-session/README.zh.md:171）。
+- 这两句错误文案是**给模型看的行为指令**，不是日志：`TOOL_OUTCOME_UNKNOWN` 明确要求
+  "只对只读或幂等操作重试；有副作用先核验外部状态或问用户"（已核实 dsh-session/README.zh.md:171）。
+- 恢复日志时，`interruptedTurnClosers` 作为普通批次追加（已核实 dsh-agent-loop/README.zh.md:116）。
+- 持久化写入点：`persistence.create(header)` / `open(id,'write')`，teardown 时关句柄
+  （已核实 dsh-agent-loop/README.zh.md:116）。
+
+### 序列的一句话总结
+
+**用户消息 → 入队 → 唤醒 driver → 开轮次 → 领输入+组装提示词 → 拦截 → 落 system/user 消息 →
+派生 messages → 调模型 → 落 assistant → 逐个跑工具并落 call/result → 没工具了就关轮次。**
+每一步都先写日志、再从日志派生，而不是"改内存、事后记日志"。
+
+---
+
+## 工具与服务的接口
+
+### 服务（`inject`）清单
+
+`inject` 是**声明式依赖**：`export const inject = ['tools']`，框架保证 `apply` 执行时这些服务已就绪；
+服务消失（提供方卸载）时依赖它的插件**自动 dispose**，服务回来后**自动重新加载**
+（已核实 https://deepseek-harness.github.io/deepseek-harness/develop/framework/service.md ）。
+
+服务名是挂在 `ctx` 上的属性名。本次对解出的包做全库扫描（`super(ctx, "<name>")`），共 **27 个注册点**：
+其中 26 个是下表列出的服务，另 1 个 `pluginPackages`（dsh-app-boot/lib/index.js:3498）与 agent 循环无关；
+表里 `commands` / `jobs` 两行是本次没解出的包、按用途列出的，已标"未核实"。
+
+| 服务名（`ctx.*`） | 包 | 注册位置（已核实） | 提供什么 |
+|---|---|---|---|
+| `tools` | dsh-tools | dsh-tools/lib/index.js:2798 | 工具注册表 + 执行流水线（`register/restrict/guard/schemas/get`） |
+| `llm` | dsh-llm | dsh-llm/lib/index.js:1816 | 模型适配器路由、`stream()`、`prepareCall()` |
+| `agents` | dsh-agent | dsh-agent/lib/index.js:332 | agent 注册表与工厂 seam（`create/resume/get/list/withInitiator`） |
+| `agentLoop` | dsh-agent-loop | dsh-agent-loop/lib/index.js:1572 | 具体 driver（配置、声明式 agent） |
+| `sessions` | dsh-session | dsh-session/lib/index.js:1739 | 会话日志（`create/get/list/fork/flush`） |
+| `sessionProjections` | dsh-session-projection | dsh-session-projection/lib/index.js:52 | 日志折叠成投影（inbox、turn 边界、权限…） |
+| `systemPrompt` | dsh-system-prompt | dsh-system-prompt/lib/index.js:226 | 提示词段/变量/工具 schema 组装 |
+| `approval` | dsh-user-approval | dsh-user-approval/lib/index.js:76 | 一次性审批 seam（ask/never，fail closed） |
+| `sandboxPolicy` | dsh-sandbox-policy | dsh-sandbox-policy/lib/index.js:111 | 逐调用文件策略（read-only / workspace-write / danger-full-access） |
+| `sandbox` | dsh-sandbox | dsh-sandbox/lib/index.js:285 | 沙箱执行 seam（后端无关） |
+| `permissionPresets` | dsh-permission-presets | dsh-permission-presets/lib/index.js:170 | 把"沙箱模式 + 审批策略"捆成用户可见的预设 |
+| `subagents` | dsh-subagent | dsh-subagent/lib/index.js:2992 | 委派服务（提供方注册表 + activation 生命周期） |
+| `compaction` | dsh-compaction | dsh-compaction/lib/index.js:171 | 压缩 seam（后端可替换） |
+| `toolResultPruner` | dsh-compaction-tool-result-pruner | .../lib/index.js:71 | 压缩前修剪超大工具输出 |
+| `tokenMeter` | dsh-token-meter | dsh-token-meter/lib/index.js:692 | token 计价（压缩决策的唯一价格来源） |
+| `skills` | dsh-skill | dsh-skill/lib/index.js:132 | 技能注册表 |
+| `commands` | dsh-commands | 本次未解出该包 | 斜杠命令（`/compact`、`/permission` 等）**未核实** |
+| `goals` | dsh-goal | dsh-goal/lib/index.js:592 | 跨轮次目标 |
+| `workflowEngine` | dsh-workflow | dsh-workflow/lib/index.js:61 | 脚本化多 agent 编排 |
+| `agentTeams` | dsh-experimental-agent-team | .../lib/index.js:1452 | 具名 teammate + 共享任务板（实验性） |
+| `workspaceRegistry` | dsh-workspace | dsh-workspace/lib/index.js:376 | 项目/工作区列表（**对模型不可见**，不进提示词） |
+| `jobs` | dsh-jobs-local | 本次未解出该包 | 后台任务**未核实** |
+| `userQuestions` | dsh-user-questions | dsh-user-questions/lib/index.js:490 | 向用户提问并等回答（应有 `ask_user_question` 一类工具，**工具名未核实**） |
+| `spillStore` | dsh-spill | dsh-spill/lib/index.js:54 | 大输出落盘/分块回读 |
+| `authorization` | dsh-authorization | dsh-authorization/lib/index.js:64 | **未核实**（包 README 未读，疑似账号/凭据授权） |
+| `pluginManager` | dsh-plugin-manager | dsh-plugin-manager/lib/index.js:1605 | 安装/启停插件、组合包管理 |
+| `dynamicCordisRunner` / `cordisInspect` | dsh-cordis-host-runner | .../lib/index.js:1585 / :728 | 运行时改组合（Creator 模式的底层） |
+
+> 这 27 个注册点只覆盖本次解出的 ~35 个包，而 asar 里 `@deepseek-ai/*` 一共 **307 个包**
+> （已核实：解析 asar 头部后计数）。所以**完整服务清单未核实**。
+> 官方也明确说"别维护第二份静态清单，以生成的子系统页面与 TS 接口为准"
+> （已核实 service.md 末节）。
+
+### 工具定义形态
+
+`defineTool(options)` 是唯一的作者入口（已核实 dsh-tools/lib/index.js:838-887）。字段：
+
+| 字段 | 必需 | 作用 | 证据 |
+|---|---|---|---|
+| `name` / `description` | 是 | 模型看到的名字与说明 | :852-853 |
+| `parameters` | 是 | **作者 DSL**（不是裸 JSON Schema），执行前编译成 JSON Schema 并校验 | :848, :850 |
+| `output.schema` | 是 | 规范输出声明（`execute` 只返回所声明的值） | :849 |
+| `output.render` | 是 | 把规范值渲染成模型可见内容块 | :857-859 |
+| `execute(args, exec)` | 是 | 调用主体；`exec.signal` 协作式取消 | :866-870 |
+| `isConcurrencySafe` | 否 | 声明能否与他人并行 | :882-885 |
+| `timeoutMs` | 否 | **仅声明**，注册表不强制执行 | :847、README:235 |
+| `finalizeContent` / `projectContent` / `presentCall` / `presentResult` | 否 | 内容收尾与 Host 侧展示 | :872-881 |
+| `deferLoading` | 否 | 请求延迟加载定义 | :864 |
+
+参数 DSL 支持 `string / number / integer / boolean / null / array / object / json / oneOf`
+（已核实 dsh-tools/README.zh.md:64）；原始 JSON Schema 是它与 subagent/工作流/MCP 之间的协议级对应类型。
+
+**执行流水线是固定的五段**（已核实 dsh-tools/README.zh.md:109）：
+
+```
+tools/pre-execute  (可扩展: allow / deny / ask)
+  → 已注册的单调 guard        (ctx.tools.guard，拒绝后不能被后续监听器翻回 allow)
+  → tools/execute             (包超时/重试/指标)
+  → tools/post-execute        (检查/替换结果、附加上下文)
+  → finalizeContent
+  → tools/result              (只观测，冻结结果)
+```
+
+三条硬约束，抄的时候别漏：
+- `tools/pre-execute` **故意不允许改写 `exec.arguments`**（否则日志与实跑不同步，README:233）。
+- guard 是"单调"的：只能加拒绝，不能加允许（README:89）。
+- 超时得靠 `dsh-tool-call-timeout-policy` 包一层，`timeoutMs` 本身不生效（README:235）。
+
+### 最小插件骨架（官方原文级）
+
+一个插件就是一个导出 `apply` 的模块（已核实 https://deepseek-harness.github.io/deepseek-harness/develop/basic/ ）：
+
+```ts
+import type { Context } from '@deepseek-ai/cordis'
+
+export const name = 'hello-plugin'
+
+export function apply(ctx: Context) {
+  // 通过 ctx 注册的一切（监听、工具、定时器）在卸载时自动清理
+  ctx.effect(() => {
+    const timer = setInterval(() => console.log('heartbeat'), 5000)
+    return () => clearInterval(timer)      // 卸载时执行
+  })
+}
+```
+
+需要别的服务就声明 `inject`；要**提供**服务就继承 `Service`：
+
+```ts
+import { Service, type Context } from '@deepseek-ai/cordis'
+
+export default class MetricsService extends Service {
+  static inject = ['llm']
+  constructor(ctx: Context) { super(ctx, 'metrics') }
+  record(event: string, value: number) { /* ... */ }
+}
+```
+
+最小工具插件（把 README 的例子压到最短）：
+
+```ts
+import { defineTool } from '@deepseek-ai/dsh-tools'
+export const inject = ['tools']
+
+export function apply(ctx: Context) {
+  ctx.tools.register(defineTool({
+    name: 'read_file',
+    description: 'Read a file from disk.',
+    parameters: { path: { type: 'string', required: true, description: 'Absolute file path' } },
+    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
+    async execute(args, exec) { return readFile(args.path, { encoding: 'utf8', signal: exec.signal }) },
+  }))
+}
+```
+
+关键点：**注册即上架**——"注册一个工具就足以让它可见：注册表会自动把其 schema 送入系统提示词组装"
+（已核实 dsh-tools/README.zh.md:30）。没有额外的"启用"步骤。
+
+### 组合与装载（profile / patch）
+
+- 生效配置 = 按层叠加的 patch 数组，后层按 `id` 覆盖前层，**且 patch 替换整段 `config` 而不是深合并**
+  （已核实 https://deepseek-harness.github.io/deepseek-harness/develop/basic/publish.md ）。
+- 层序：各组合包 patch（按 `dsh.profile.bundles` 顺序）→ profile 的 `cordis.patch.yml` → home 的
+  `$DSH_HOME/cordis.patch.yml` → 每个 `--patch`（依 argv 顺序）（同上）。
+- 本机实盘：`C:\Users\Fanch\.dsh\profiles\desktop\cordis.yml` 就是 `[]`，全部组合来自
+  `package.json` 的 `dsh.profile.bundles` **10 个**组合包 + `cordis.patch.yml` 十余行覆盖
+  （已核实本机文件）。`dsh-base` 自己的 `cordis.patch.yml` 是**一个 `insert:` 下 96 个插件条目**
+  （已核实 dsh-base/cordis.patch.yml 全文 529 行，`- id:` 计数 96）。
+- **行序不承载加载语义**：激活由"服务是否就绪"驱动，`insert` 列表里的先后只影响阅读
+  （已核实 dsh-base/cordis.patch.yml:10）。
+- `!!js` 表达式可在配置里读取环境变量，`disabled:` 也可用表达式（已核实 dsh-base/cordis.patch.yml:246-262）。
+
+---
+
+## 提示词是怎么拼的
+
+DSH 的系统提示词不是一段字符串，而是**一个注册表 + 一条组装流水线 + 一次渲染**。
+
+### 三种输入，一次 assemble
+
+`ctx.systemPrompt` 收三类贡献（已核实 dsh-system-prompt/README.zh.md:28-86）：
+
+| 输入 | 注册方式 | 变成什么 |
+|---|---|---|
+| 段（section） | `ctx.systemPrompt.section({name, order, text})` | 提示词正文的一节 |
+| 变量（variable） | `ctx.systemPrompt.variable('response_language', () => 'English')` | 段文本里的 `{{name}}` 插值 |
+| 工具 schema | 工具提供方（`ToolRuntime` 自动注册自己） | 模型可见的 `ToolSchema` 集合 |
+
+`assemble()` 与 `renderPrompt()` **分两阶段**：先求值（段文本、工具 schema、变量当前值），
+再渲染（插值 `{{…}}`、删空段、用空行连接）（已核实 README:110）。
+
+### 分段顺序（这是真正的"结构"）
+
+段先按 `order` 升序、同值再按名称的代码单元排序（已核实 README:56）。第一方占用这些位置：
+
+| order | 内容 | 证据 |
+|---|---|---|
+| `-1000` | 固定身份：`You are an AI agent powered by DeepSeek Harness.` | README:46, 144-146 |
+| `0` | 部署 persona 前缀（`personaPrefix`，可被 agent 作用域遮蔽） | README:48 |
+| 中间 | 各插件自己的段（工具指引、plan mode、审批策略…），用 `getSectionOrder(name)` 取号 | README:56 |
+| `10000` | harness 源码位置 | README:140 |
+| `10100` | Web 表层信息 | README:140 |
+| `10200` | 部署 persona 后缀（`personaSuffix`） | README:49, 140 |
+
+另有两个特殊开关：
+- `complete: true` 的段会**取代整份提示词**；有效的 complete 段超过一个，组装直接失败（README:56）。
+- `toolOrder` 显式规定工具在模型眼里的顺序，必须含且仅含一个 `'<unlisted-tools>'` 其余项
+  （README:50-52）——因为"注册顺序只是插件加载的产物"（README:110）。
+
+### 渲染的严格性
+
+- 未知 `{{…}}` 引用、已注册但无值的引用、格式错误的 complete 组 → **抛错，不发请求**。
+  官方理由一句话："格式错误的提示词比明确失败更糟"（已核实 README:110）。
+- 需要原样保留花括号时加 `interpolate: false`（README:66）。
+- 空段自动消失；`renderPrompt` 才是"最终文本"（README:110）。
+
+### 运行时上下文不是提示词段
+
+这点最容易抄错。DSH 把**每轮会变的事实**（沙箱策略、审批策略、子 agent 委派范围、工作目录）
+做成 **user 角色的快照消息**，追加在保留历史之后，而不是塞进系统提示词：
+
+- 机制：`refreshContext(assembly, context)` 在 pre-step 与路由准备后刷新已注册事实；
+  段/工具/变量保持已接纳状态（已核实 README:68, 140）。
+- 落点：loop 把它作为带来源的 `user/message` 追加（已核实 dsh-agent-loop/lib/index.js:1053-1073；
+  README:140）。
+- 三份实际文案（已核实）：
+  - 沙箱：`Current DSH file policy: workspace-write. ...`（dsh-sandbox-policy/README.zh.md:115-129）
+  - 审批：`Approval policy: ask. ...`（dsh-user-approval/README.zh.md:114-122）
+  - 委派：`You are a delegated subagent: your permission scope was fixed...`（dsh-subagent/README.zh.md:186）
+
+好处是工程性的：**稳定前缀逐字节不变 ⇒ provider 的 KV cache 能复用**；变化的事实追加在后面，
+不使已有前缀失效（已核实 dsh-sandbox-policy/README.zh.md:137）。
+
+### 记忆块挂在哪
+
+按本机实现，**没有独立的"记忆"服务**——本次解出的 27 个注册点里没有 memory 类服务
+（未核实是否存在于其余 ~272 个包）。实际存在的"记忆"是这几类东西，挂在不同地方：
+
+| 形态 | 挂载点 | 证据 |
+|---|---|---|
+| 工作区指令（`AGENTS.md` / `CLAUDE.md` 链） | 首请求注入一条持久 **user 消息**，整体包在 `<system-reminder>` 里 | 已核实 dsh-agent-instructions/README.zh.md:34, 88, 136-152 |
+| 会话历史本身 | 事件日志 + `deriveMessages()` | 已核实 dsh-session/README.zh.md:42 |
+| 压缩检查点 | **替换**旧区间的 user 消息，内含 `<compacted-summary>` | 已核实 dsh-compaction-basic/README.zh.md:166-172 |
+| 运行时事实快照 | 追加的 user 消息（见上） | 已核实 dsh-user-approval/README.zh.md:81 |
+| 技能（skills） | `ctx.skills` 注册表；模型看到的形态未核实 | dsh-skill/lib/index.js:132 |
+| 第三方记忆插件（本机 profile 装了 `@yolk_vat-y/dsh-project-memory`） | 至少提供工具（本会话可见 `index_repo` / `query_memory` / `save_lesson` 一类）；怎么注入提示词**未核实** | 已核实本机 `profiles/desktop/package.json` 的依赖与组合包列表 |
+
+`AGENTS.md` 那条链值得注意的三个设计：
+- 顺序是"从宽泛到具体"：`$DSH_HOME/AGENTS.md` → `<agentsHome>/AGENTS.md` → 项目根到 cwd 每一级
+  （已核实 instructions README:34）。
+- **不监听文件**：嵌套文件的发现由"成功的 `read`/`write`/`edit` 触达更深目录"驱动，不是 watcher
+  （已核实 README:103, 220）。
+- 注入内容里的 `</system-reminder>` 会被转义，仓库控制不了这段框
+  （已核实 README:107）——这是一条**真实的注入防御**，值得抄。
+
+### 预算控制（哪里有、哪里没有）
+
+| 位置 | 有无硬预算 | 证据 |
+|---|---|---|
+| 系统提示词段 | **没有**。配置只有 5 项（身份 / 运行时上下文 / persona 前缀 / persona 后缀 / 工具顺序） | 已核实 dsh-system-prompt/README.zh.md:44-50 |
+| `AGENTS.md` 基线 | **有**，`maxBytes: 65536`（base 组合的取值）。超预算先丢宽泛文件、最后才截断最具体文件 | 已核实 dsh-base/cordis.patch.yml:303-306；instructions README:74 |
+| 工具 schema | 没有绝对上限，但"限制工具会为该 agent 移除其全部 schema 成本" | 已核实 dsh-system-prompt/README.zh.md:164 |
+| 压缩（compaction） | **有阈值**：`floor(min(W×0.8, W−O−65536))`，逐字保留 `W−O` 的 16% | 已核实 dsh-compaction-basic/README.zh.md:62, 66-68 |
+| 单文件输入 | `maxSourceBytes: 1048576` | 已核实 instructions README:65 |
+
+一句话：**DSH 的预算控制不在提示词层，在"注入层（AGENTS.md 字节预算）+ 历史层（compaction 阈值）"**。
+
+### compaction 的两个可实现细节
+
+- 摘要请求**复用**系统提示词 + 上次工具声明 + 被遮蔽区间消息，使辅助调用成为会话的真前缀，
+  只让尾随指令与输出未命中缓存（已核实 compaction-basic README:108, 119）。
+- 摘要**只取返回文本**，`purpose: 'compaction'`，推理与工具调用都丢弃（README:119）；
+  摘要不缩小输入就被拒绝（README:125）。失败时保留最新表面并继续带着超预算历史跑（README:246）。
+
+---
+
+## 权限与审批
+
+### 三个沙箱模式（只约束**文件操作**）
+
+`read-only` / `workspace-write` / `danger-full-access`。模型在每个请求都会收到当前策略的一句话
+（已核实 dsh-sandbox-policy/README.zh.md:113-129）。解析优先级：
+
+```
+显式批准的单次模式  >  会话最后一条 sandbox/mode 事件  >  部署默认值
+```
+（已核实 README:72, 76）。切换模式本身就是一条**仅日志**事件，所以跨重启靠回放保留，会话之间互不可见。
+
+- 部署默认值是 `read-only`（故障安全，README:36），但 `dsh-base` 把默认钉成 `workspace-write`
+  且可用 `DSH_PERMISSION_MODE` 覆盖（已核实 dsh-base/cordis.patch.yml:246）。
+- 范围只有文件：网络与进程策略**不在** `SandboxMode` 的词汇里（已核实 README:147）。
+- Windows 上 `workspace-write` 额外给会话私有临时目录（`<temp>\dsh-<hash>`），`read-only` 不给
+  （已核实 dsh-base/README.zh.md:135）。
+
+### 审批：一个"通道无关"的 seam
+
+- 两种策略：`ask`（默认，交给已组合的应答者）与 `never`（在分发之前确定性拒绝，给 CI/无人值守用）
+  （已核实 dsh-user-approval/README.zh.md:36）。
+- **失败关闭**：没有应答者、应答者抛错、返回值不在结果词汇里 → `unavailable` → 按拒绝处理
+  （已核实 README:12, 32, 77）。
+- 只有**一次性授权**：结果词汇有 `allowed-once`，**没有** `allow-always`、记住的规则、撤销或授权存储
+  （已核实 README:154）。
+- 请求必须落在**未结束的轮次**内，因为轮次是日志的提交/回放边界（已核实 README:52, 77）。
+- 审计：先写 `approval/asked` 再写 `approval/decided`，**两条都只进日志**；模型只看得到最终工具结果
+  和策略快照（已核实 README:85, 56）。
+- `never` 的执行位置在 waterfall **之前**，所以后注册的监听器也绕不过去（已核实 README:77）——
+  "确定性拒绝"这个语义是靠**执行顺序**保证的，不是靠约定。
+
+### 四道闸（从模型到磁盘）
+
+```
+1) 工具可见性   ctx.tools.restrict(filter) 缩小该 agent 能看见的 schema
+2) 调用策略     tools/pre-execute (allow/deny/ask) + ctx.tools.guard (单调拒绝)
+3) 沙箱         sandboxPolicy 解析出模式 → bash/fs/terminal 各自的执行器强制执行
+4) 审批         ask 时经 approval seam 问人；无应答者则拒绝
+```
+（1 已核实 dsh-tools/README.zh.md:85；2 已核实 :109；3 已核实 dsh-sandbox-policy README:28, 72；
+4 已核实 user-approval README:28。）
+
+**升权**是一条特殊路径：工具参数里带更宽的 `sandbox_permissions` 时，必须给非空 `justification`，
+且**在程序启动前**拿到审批；授权只覆盖那一次完整执行，常驻会话策略与嵌套工具各留各的权限
+（已核实 dsh-tools/README.zh.md:136）。
+
+### "安装即授权"是什么意思
+
+官方原话（已核实 https://deepseek-harness.github.io/deepseek-harness/develop/basic/publish.md ，
+"从 GitHub 安装：构建脚本这道坎"节）：
+
+> 请把这项授权视为**允许该包的代码在安装时于你的机器上执行**，且不在 agent 运行的任何沙箱之内。
+> 只对源码可信的包授权，并锁定 commit。
+
+含义拆开：
+
+1. **沙箱只约束工具调用，不约束插件本身。** 插件是加载进宿主进程的普通 JS 模块；
+   `sandbox` 的词汇只覆盖文件操作（见上）。所以"装一个插件"约等于"让这段代码以你的权限在宿主进程里跑"。
+2. **安装时的 `prepare` 脚本是真正的信任边界。** pnpm ≥10 默认拒绝运行 git 依赖的构建脚本，
+   用户必须在 profile 的 `pnpm-workspace.yaml` 写 `allowBuilds: <pkg>: true` 才放行——
+   这一步就是"授权"的字面含义。
+3. **替代路径是分发构建产物**（npm 预构建 / `pnpm pack` tarball），这样不需要任何构建权限（同上）。
+
+### 还有哪些闸（安装侧）
+
+| 闸 | 作用 | 证据 |
+|---|---|---|
+| `engines.dsh` SemVer 范围 | 当前 DSH 不满足就拒绝安装/启动；没有则退查 `@deepseek-ai/dsh*` peer 范围 | 已核实 publish.md |
+| 安装前 `inspect(spec)` | 先读出 spec 指向什么（包名/版本/描述/是否声明组合包/答话的 registry），再动手 | 已核实 dsh-plugin-manager/README.zh.md:48 |
+| 版本豁免 `compatibility.json` | 允许"版本不匹配但我要装"，需 `--accept-risk`；**插件升级与 DSH 升级都不继承授权** | 已核实 README:71, 75 |
+| 授权在**下一次组合**时生效 | 在线 profile 重组合后当前会话即可用（`applied`）；仅启动型 profile 报 `restart-required` | 已核实 README:73 |
+| HMR 重组 | 串行执行模块重载/文件监听/管理写入 | 已核实 README:98 |
+
+**没有的东西**（别以为有）：没有 per-plugin 权限声明、没有插件级 capability 白名单、
+没有"插件沙箱"。权限模型的粒度是**工具调用**，不是**插件**。
+
+---
+
+## 对照：一个 Python/FastAPI 项目要补齐哪几块
+
+前提：Miracii 已有 `persona.system_prompt()` 单一拼装点、append-only 台账、heartbeat 调度器、
+界面命令窗口的白名单分发器（这些来自 [agent-integration.txt](agent-integration.txt)，
+本次未复核其实现，按"既有结论"引用）。
+
+### checklist
+
+（下表"DSH 的做法"列里括号中的行号均为本次**已核实**；凡未核实的会显式写"未核实"。）
+
+| # | 机制 | 必要性 | DSH 的做法（证据） | Python/FastAPI 最小实现 | Miracii 现状 |
+|---|---|---|---|---|---|
+| 1 | **只追加事件日志 + 派生 messages** | **必须** | `Session` 是唯一真源，`deriveMessages()` 派生（session README:42, 100） | `data/agent/<session>.jsonl`，每行 `{seq,type,data,surface_op}`；`derive(session)` 纯函数 | 部分：台账是 append-only，但没有"对话即事件" |
+| 2 | **turn/step 状态机 + 取消** | **必须** | `turn()` / `step()` / `AbortSignal`（loop:938, 1043） | `async def run_turn()`，`asyncio.Event` 作取消位；`CancelledError` 收尾要落 `turn/end` | 缺 |
+| 3 | **工具注册表 + schema 校验 + 错误回灌** | **必须** | `defineTool` + `UNKNOWN_TOOL` 不结束轮次（tools README:126） | `@tool(name, schema)` 装饰器；`jsonschema.validate`；异常 → `{"is_error": true, "content": ...}` | 缺 |
+| 4 | **单一提示词装配点（段+变量+工具 schema）** | **必须** | `ctx.systemPrompt.assemble()`（system-prompt README:100） | 一个 `build_prompt(persona, recall, tools) -> list[section]`，**顺便**产出 `tools` 列表 | 已有雏形：`persona.system_prompt()`，需扩成"分段 + 带工具" |
+| 5 | **权限闸门（策略 + 审批 + 沙箱）** | **必须** | 四道闸（见上节） | 工具级 `POLICY: {tool: allow/deny/ask}`；`ask` 走一次性 token 的确认接口；危险工具默认 deny | 缺（白名单分发器可复用其"结构即边界"思路） |
+| 6 | **失败恢复（tool call/result 成对）** | **必须** | `TOOL_OUTCOME_UNKNOWN` / `TOOL_NOT_STARTED`（loop:975-990） | 收尾时扫"有 call 无 result"，补固定文案的错误结果 | 缺 |
+| 7 | **步数/轮次上限** | **必须**（DSH 故意不提供） | 无内置预算，需 `agent/turn-stopping` 自行取消（loop README:220） | `MAX_STEPS`，超限落一条"这轮没想完"的收尾 | 缺 |
+| 8 | **流式回复的持久化语义** | 必须 | 取消时把已交付前缀落成 `interrupted: true`（loop:1096-1112） | SSE 每 flush 一次就记一次已交付文本；取消时落 `assistant/partial` | 缺 |
+| 9 | **compaction（阈值+摘要+保留尾部）** | 可选（长会话才必须） | `floor(min(W×0.8, W−O−65536))`，保留 16%（compaction README:62） | `if tokens > 0.8*W: 摘要旧区间 → 替换`；先做"修剪超大工具输出"更便宜 | 缺 |
+| 10 | **子 agent / fork** | 可选 | `startActivation` 立即返回 childId；fork 只继承"已完成轮次"快照，**不继承权限**（subagent README:45；fork README:32, 36） | `asyncio.create_task` + 子会话 id；深度上限 1、并发上限 8 | 不需要（单人） |
+| 11 | **token 计量** | 可选（有 compaction 才需要） | `ctx.tokenMeter` 是压缩决策的唯一价格来源（compaction README:106） | `len(text)/4` 粗估即可，注明是估算 | 无 |
+| 12 | **工作区注册表** | 可选 | 对模型完全不可见，零 token（workspace README:152） | 不需要；Miracii 只有一个人格目录 | 不需要 |
+| 13 | **观测（OTel / 遥测）** | 可选 | `session-telemetry-otel`，默认 `FEEDBACK_ONLY`（已核实 dsh-base/README.zh.md:50） | 先只记本地 JSONL 指标 | 有台账 |
+| 14 | **插件热插拔 / 动态组合** | 可选（且是最大风险项） | `dynamicCordisRunner` + `pluginManager`（服务表） | 不建议：Python 里等价物是 importlib 重载，收益远小于风险 | 不做（红线） |
+| 15 | **goal / plan mode / 定时自主轮次** | 可选 | `ctx.goals`、`dsh-plan-mode` | 定时器 + 目标表；已有 heartbeat 可承载 | 已有 heartbeat，缺"自主 turn" |
+
+### 推荐的最小骨架（6 个模块，够跑通 1-7）
+
+```
+app/agent/
+  events.py     # 追加日志 + derive()：唯一的真源与投影
+  loop.py       # turn/step 状态机、取消、MAX_STEPS、收尾
+  tools.py      # 注册表：schema 校验、并发分类、错误→结果
+  prompt.py     # 单一装配点：段(order) + 变量 + 工具 schema
+  policy.py     # 四道闸里的 1-3（可见性、allow/deny/ask、沙箱口径）
+  recovery.py   # 成对补齐、未知结果文案、partial assistant
+```
+
+两个"抄对才有用"的细节：
+- `loop` 只写 `events`、只从 `events` 派生 messages；**不要**另存一份 `messages: list`（对不上就是双真源）。
+- `tools` 的返回值必须是**结构化结果**（`content` + `is_error`），不是异常冒泡；异常是"框架故障"，
+  工具失败是"模型可以自纠的信息"——这条区分是 DSH 里 `UNKNOWN_TOOL` 与"插件失败关闭轮次"的分界
+  （已核实 dsh-tools/README.zh.md:126；dsh-agent-loop/README.zh.md:128）。
+
+### 明确不建议抄的
+
+| 不要抄 | 为什么 |
+|---|---|
+| PTC mode（`run_code` + 生成 SDK） | 为省 token 换来的是一整套运行时与类型渲染（tools README:128-136），单人项目纯负债 |
+| 插件热插拔 / 动态组合 | 收益是"改配置不用重启"，代价是"任意代码在宿主进程里跑"，与 Miracii 红线冲突 |
+| `danger-full-access` | Miracii 既有结论就把它列为"不做"（agent-integration.txt:126） |
+| 事件格式的多版本迁移链（v0→v4） | DSH 有 5 个 `session-format-vN-to-vN+1` 包；单人项目一个版本够用，加 schema 版本号即可 |
+
+---
+
+## 未核实清单
+
+按"用之前必须自己验"的程度排序。
+
+| # | 项 | 状态 | 说明 |
+|---|---|---|---|
+| 1 | **行号随版本失效** | 已核实风险 | 全部行号对应 `dsh-agent-loop` 0.2.1-rc.5 / 宿主 44.7.0。DSH 升级后必须重核（尤其 `lib/index.js`，它是 bundle，行号会整体漂移） |
+| 2 | **包内没有 `src/*.ts`** | 已核实 | 各 README 的"源码地图"列 `src/agent.ts` 等文件，包内只有 `lib/index.js` + README。想要 TS 源码得去 GitHub 仓 |
+| 3 | **完整服务清单** | 未核实 | 只抓了本次解出的 ~35 个包里的 27 个注册点；asar 里 `@deepseek-ai/*` 共 **307 个包**（已核实计数）。`commands` / `jobs` 两个服务本次没解出包，按用途列出并标了"未核实"；`fs` / `shell` / `web` 等服务本次未查 |
+| 4 | **`ctx.authorization` 的职责** | 未核实 | 只抓到注册行（dsh-authorization/lib/index.js:64），没读 README。疑似 DeepSeek 账号/凭据授权，**不要据此设计权限模型** |
+| 5 | **技能的注入形态** | 未核实 | 只知 `ctx.skills` 注册表存在（dsh-skill/lib/index.js:132）；技能怎么进提示词、怎么进工具列表没读 |
+| 6 | **是否存在独立记忆服务** | 未核实 | 27 个服务里没有 memory 类；但没解出的包里可能有。本机 profile 装的 `@yolk_vat-y/dsh-project-memory` 是第三方插件，其注入点未读 |
+| 7 | **teammate（`dsh-experimental-agent-team`）细节** | 未核实 | 只读了 README 前 40 行（含最小配置与"持久共享任务板"），消息/任务板语义没逐条核 |
+| 8 | **官方文档覆盖范围** | 已核实 | 只取了 4 页：`/develop/basic/`、`/develop/basic/publish`、`/develop/framework/service`、`/reference/subsystems/core`（另有 `/develop/practice/dynamic-cordis` 全文读过但只用于确认 Creator 模式）。子系统页（session/tools/system-prompt/sandbox…）**未逐页读** |
+| 9 | **`systemPrompt` 是否有隐式长度上限** | 未找到 | 配置表 5 项里没有预算字段；是否有代码级硬限制没找到 |
+| 10 | **"安装即授权"是否还有别的官方表述** | 未核实 | 本文引用的是 `publish.md` 里"构建脚本这道坎"那一段；没有检索全部文档确认这是唯一口径 |
+| 11 | **Miracii 现状列** | 未核实（转引） | 第 6 节"Miracii 现状"一列转引自 [agent-integration.txt](agent-integration.txt)，本次**没有**复核 Miracii 代码 |
+| 12 | **`dsh-agent` 的 `send` 细节** | 部分核实 | 只读了 agent-loop 侧的 `send/followup/steer/inject`（:804-813）与 agent 包的类型定义；`Agent.inbox` 投影的具体折叠没读 |
+
+### 维护提示
+
+这份文档的价值全在行号。DSH 升级后最省事的复核方式：
+重新解 asar，对 `dsh-agent-loop/lib/index.js` 里 `turn/start`、`step/start`、`request/header`、
+`tool/result`、`turn/end` 五个字符串各 grep 一次，行号对不上就整篇重核。

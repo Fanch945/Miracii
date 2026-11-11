@@ -44,6 +44,25 @@ return "（这轮没想完，先说这么多）"                  # 兜底文案
 
 这 20 行就是"对话 API → agent"的全部本质。剩下的都是**工程**：工具的幂等、超时、审批、观测、成本。
 
+## 1.2 从 DSH 实现拆出来的四条硬约束
+
+来源：[dsh-agent-architecture.txt](dsh-agent-architecture.txt)（子代理读编译后 bundle，97 处已核实，
+行号绑 `dsh-agent-loop` 0.2.1-rc.5；asar 内无 `src/*.ts`，升级后行号会漂）。
+
+| 约束 | DSH 的做法 | 对 Miracii 的意义 |
+|---|---|---|
+| **事件日志是唯一真源** | 只追加 `turn/start → step/start → tool/call → tool/result → turn/end`；`messages` 由 `deriveMessages()` **派生**；**请求里没有 `system` 字段** | 我们已有 append-only 的星图与积温台账；agent 轮次也该落成事件流，而不是只存最终对话。顺带解释了生态里"Creator mode 重启即失"——内存态的插件没落事件 |
+| **工具结果按模型给出的顺序提交** | 并行有界池（默认 10）+ 独占屏障，但结果**必须按模型顺序回灌** | 将来做工具面时，`messages` 追加要按调用顺序，不能按完成顺序——否则模型会错配结果 |
+| **工具失败是数据，不是中断** | 失败变成模型可见的 error result，**轮次继续** | 我们惯用的 `try/except: pass` 在 agent 里是要淘汰的：错误必须回灌给模型自纠 |
+| **故意没有步数上限** | DSH 不设内置上限 | 我们必须自设 `MAX_STEPS` + 超时 + 费用闸——单人项目最怕一夜烧光 token |
+
+两条可以直接抄的设计判断：
+
+1. **提示词每步重拼**（段 order + 变量 + 工具 schema 在同一次 `assemble` 里）。这与我们的
+   `persona.system_prompt()` 是同一位置的两种实现——我们已经站在正确的位置上。
+2. **预算**：DSH 把 `AGENTS.md` 当 **user 消息**注入、预算 65536 字节。**预算可以抄，注入方式不建议抄**：
+   人格设定进 user 消息会污染对话语义（模型会当成"对方说的"），我们要留在 system 段。
+
 ## 2. 三种拓扑（Miracii 该站哪一个）
 
 | 拓扑 | 形态 | 优点 | 缺点 |

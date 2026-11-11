@@ -18,6 +18,7 @@
 | [jiwen.txt](jiwen.txt) | 积温引擎的完整机制要点（五轴 / 阈值 / 漂移 / 闸门 / 调参史） |
 | [jiwen-spec.txt](jiwen-spec.txt) | **逐行可执行规格**（9 节，每个公式与常量带源码行号 + SHA256 基线）——写 Python 版照这份，不必再读 JS |
 | [memory-frontier.txt](memory-frontier.txt) | 记忆系统前沿方案对照、可落地清单、引用勘误表 |
+| [dsh-agent-architecture.txt](dsh-agent-architecture.txt) | **DSH 智能体框架的机制说明**（本机 asar 源码 + 官方文档，逐条带行号/URL）：agent 与 chat 的六处差别、一次 turn 的执行序列、`inject` 服务清单、工具定义形态、提示词分段与预算、权限与审批、Python/FastAPI 对照 checklist |
 
 ## 读法
 
