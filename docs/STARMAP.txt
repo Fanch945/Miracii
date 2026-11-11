@@ -19,11 +19,15 @@
 
 ## 2. 星点字段
 
+> **订正（2026-11-12）**：字段是**扁平落盘**的（`file` / `block` / `fp` 直接是顶层键），没有嵌套的 `anchor` 对象。
+> 早期文档写成 `anchor.file` 与实际不一致，已改正；落盘格式未变。
+
+
 | 字段 | 类型 | 含义 |
 |---|---|---|
-| `anchor.file` | str | 相对 `persona/<id>/` 的路径，如 `memory/impression/2026-10-13.txt` |
-| `anchor.block` | int | 该文件内的块序号（按 `# ` 分块，从 0 起） |
-| `anchor.fp` | str | 该块**正文**的 sha1 前 12 位——锚定的真身 |
+| `file` | str | 相对 `persona/<id>/` 的路径，如 `memory/impression/2026-10-13.txt` |
+| `block` | int | 该文件内的块序号（按 `# ` 分块，从 0 起） |
+| `fp` | str | 该块**正文**的 sha1 前 12 位——锚定的真身 |
 | `kind` | str | `impression` / `episodic` / `semantic` / `lore` |
 | `level` | int | 层级：见 §4。用于仲裁 |
 | `ew` | float | 情感权重 0–1，六档锚定（见 §3） |
@@ -33,7 +37,7 @@
 | `src` | str | 来源：`transcript/<id>#<msgid>` / `ext:<系统>` / `authored` |
 | `state` | str | `active` / `retired` / `deferred` |
 
-`starmap.jsonl` 只追加；同一 `anchor` 再次入册时写新行、旧行标 `retired`（**软删除，保留历史**）。
+`starmap.jsonl` 只追加；同一 `(file, block)` 再次入册时写新行、旧行标 `retired`（**软删除，保留历史**）。
 
 ## 3. 情感权重 `ew` 的六档锚定
 
