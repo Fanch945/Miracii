@@ -1,5 +1,8 @@
 # 智能体方向的考察与接入方案（讨论稿）
 
+> **状态：已被 [agent-integration.txt](agent-integration.txt)（v2）取代。** v1 的「不碰账号」与「agent 执行必然人设分裂」两个判断已被推翻；
+> v2 保留可用的部分（A/B/C 路线、八条可借鉴清单），并给出能力阶梯与三种拓扑。
+
 - 日期：2026-11-02
 - 作者：DSH（DeepSeek Harness agent）
 - 资料底座：[docs/reference/agent-ecosystem.txt](agent-ecosystem.txt)（24 个条目，21 个已核实）

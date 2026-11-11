@@ -25,3 +25,11 @@
 - 「**已核实**」= 读过源码或原文并给出位置；「**未核实**」= 只有二手转述，**用前必须自己验**。
 - 第三方那份分析核实过 8 条引用：**6 条存在、1 条张冠李戴、1 条因子名是编的**（详见 `memory-frontier.txt` 末节）。它另有一条关于"缺乏情感元数据"的判断被源码直接证伪。
 - 这里是**输入**，不是结论。真正的决定与改动记录在 `docs/changes/`；模块怎么工作看 `docs/*.txt`。
+
+## 索引补录（2026-11-12）
+
+| 文件 | 内容 |
+|---|---|
+| [agent-direction.txt](agent-direction.txt) | 智能体方向的考察与接入方案（讨论稿） |
+| [agent-ecosystem.txt](agent-ecosystem.txt) | （无标题） |
+| [agent-integration.txt](agent-integration.txt) | 从对话 API 到智能体：Miracii 的接入方案（讨论稿 v2） |
